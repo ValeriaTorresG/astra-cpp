@@ -13,7 +13,7 @@ inline std::uint64_t splitmix64(std::uint64_t x) {
     return x ^ (x >> 31);
 }
 
-// xoshiro256** (Blackman & Vigna), sembrado con splitmix64.
+// xoshiro256** (blackman & vigna), seeded with splitmix64.
 class Xoshiro256 {
 public:
     explicit Xoshiro256(std::uint64_t seed) {
@@ -27,7 +27,7 @@ public:
         s_[3] = rotl(s_[3], 45);
         return result;
     }
-    // Entero uniforme en [0, bound) sin sesgo (método de Lemire).
+    // unbiased uniform integer in [0, bound) (lemire's method).
     std::uint64_t below(std::uint64_t bound) {
         __uint128_t m = __uint128_t(next()) * bound;
         auto low = std::uint64_t(m);
@@ -50,13 +50,13 @@ private:
 
 std::vector<std::vector<Index>> sample_pool(const std::vector<Index>& sizes, Index n, std::uint64_t seed) {
     for (Index s : sizes)
-        if (s < 0) throw std::invalid_argument("tamaños de fuente negativos");
+        if (s < 0) throw std::invalid_argument("negative source sizes");
     const Index total = std::accumulate(sizes.begin(), sizes.end(), Index(0));
-    if (n < 0 || n > total) throw std::invalid_argument("el pool de randoms tiene menos filas que las pedidas");
+    if (n < 0 || n > total) throw std::invalid_argument("the random pool has fewer rows than requested");
 
-    // Sorteo con rechazo sobre un bitset del pool completo (1 bit por fila; ~240 MB
-    // para 1.9e9 filas). Si n > total/2 se sortea el complemento, que es más
-    // barato y da la misma distribución.
+    // rejection sampling over a bitset of the full pool (1 bit per row; ~240 mb
+    // for 1.9e9 rows). if n > total/2, sample the complement, which is cheaper
+    // and has the same distribution.
     const bool complement = n > total / 2;
     const Index k = complement ? total - n : n;
     std::vector<std::uint64_t> bits(std::size_t(total + 63) / 64, 0);
@@ -74,7 +74,7 @@ std::vector<std::vector<Index>> sample_pool(const std::vector<Index>& sizes, Ind
         const Index end = start + sizes[s];
         auto& rows = out[s];
         for (Index g = start; g < end;) {
-            // Recorre palabra a palabra, limitada al rango [g, end) de esta fuente.
+            // scan word by word, restricted to this source's [g, end) range.
             const Index word = g >> 6;
             std::uint64_t w = bits[std::size_t(word)];
             if (complement) w = ~w;

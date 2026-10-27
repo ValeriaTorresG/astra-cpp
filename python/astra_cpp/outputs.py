@@ -1,12 +1,12 @@
-"""Productos de una corrida: rutas, escritura atómica de .npy/.json y agregación.
+"""run outputs: paths, atomic .npy/.json writes, and aggregation.
 
-Estructura de `run_dir`:
+structure of `run_dir`:
     points/iter_XXX.npy          TARGETID, ISDATA, [RA, DEC, Z], XCART, YCART, ZCART
     classification/iter_XXX.npy  TARGETID, ISDATA, NDATA, NRAND, R, WEBTYPE
-    summary/iter_XXX.json        configuración, conteos, tiempos y memoria
+    summary/iter_XXX.json        configuration, counts, timings, and memory
     logs/iter_XXX.log
-    probability/all_completed.npy  TARGETID, PVOID, PSHEET, PFILAMENT, PKNOT (solo reales)
-Las primeras n_real filas de points y classification son siempre los objetos reales.
+    probability/all_completed.npy  TARGETID, PVOID, PSHEET, PFILAMENT, PKNOT (real objects only)
+the first n_real rows of points and classification are always real objects.
 """
 from __future__ import annotations
 
@@ -65,10 +65,10 @@ def _tmp(path: Path) -> Path:
 
 
 def write_structured(path: Path, columns: dict[str, np.ndarray], dtype: np.dtype) -> None:
-    """Escribe columnas como un .npy estructurado y lo publica de forma atómica.
+    """write columns as a structured .npy and publish it atomically.
 
-    Cada bloque se arma en memoria y se escribe de corrido: el archivo se
-    recorre una sola vez y de forma secuencial.
+    assemble each block in memory and write it contiguously: traverse the
+    file only once and sequentially.
     """
     n = len(next(iter(columns.values())))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,33 +121,33 @@ def iteration_complete(paths: RunPaths, iteration: int) -> bool:
 
 
 def aggregate(paths: RunPaths, threads: int, log: logging.Logger) -> dict | None:
-    """Probabilidad de cada clase para los objetos reales = fracción de iteraciones completas
-    en que se clasificó así. El conteo se hace en C++."""
+    """class probability for real objects = fraction of completed iterations
+    assigned to that class. counting happens in c++."""
     done = []
     for summary_path in sorted((paths.root / 'summary').glob('iter_*.json')):
         iteration = int(summary_path.stem.split('_')[1])
         if iteration_complete(paths, iteration):
             done.append((iteration, read_json(summary_path)))
     if not done:
-        log.info('agregación omitida: no hay iteraciones completas')
+        log.info('aggregation skipped: no completed iterations')
         return None
     n_real = done[0][1]['n_real']
     if any(s['n_real'] != n_real for _, s in done):
-        raise ValueError('Las iteraciones completas tienen distinto número de objetos reales')
+        raise ValueError('completed iterations have different numbers of real objects')
 
     iterations = [it for it, _ in done]
-    log.info('agregación de %s iteraciones: %s', len(iterations), iterations)
+    log.info('aggregating %s iterations: %s', len(iterations), iterations)
     counts = np.zeros((n_real, 4), dtype=np.uint16)
     reference_ids = None
     for iteration in iterations:
         cls = np.load(paths.classification(iteration), mmap_mode='r')
         ids = np.asarray(cls['TARGETID'][:n_real])
         if not np.all(cls['ISDATA'][:n_real]):
-            raise ValueError(f'iter {iteration}: las primeras {n_real} filas no son todas reales')
+            raise ValueError(f'iter {iteration}: the first {n_real} rows are not all real objects')
         if reference_ids is None:
             reference_ids = ids
         elif not np.array_equal(ids, reference_ids):
-            raise ValueError(f'iter {iteration}: los TARGETID reales difieren entre iteraciones')
+            raise ValueError(f'iter {iteration}: real TARGETIDs differ between iterations')
         for start in range(0, n_real, CHUNK_ROWS):
             end = min(n_real, start + CHUNK_ROWS)
             _core.accumulate_webtypes(counts[start:end], np.ascontiguousarray(cls['WEBTYPE'][start:end]),
@@ -156,5 +156,5 @@ def aggregate(paths: RunPaths, threads: int, log: logging.Logger) -> dict | None
     prob = _core.counts_to_probabilities(counts, len(iterations), threads=threads)
     columns = {'TARGETID': reference_ids, **{f: prob[:, k] for k, f in enumerate(PROB_FIELDS)}}
     write_structured(paths.probability(), columns, PROB_DTYPE)
-    log.info('probabilidades guardadas en %s', paths.probability())
+    log.info('probabilities saved to %s', paths.probability())
     return {'iterations': iterations, 'path': str(paths.probability())}

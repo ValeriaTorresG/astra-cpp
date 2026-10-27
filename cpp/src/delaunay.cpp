@@ -31,9 +31,9 @@ namespace {
 using K = CGAL::Exact_predicates_inexact_constructions_kernel;
 using Point = K::Point_3;
 
-// Índice del punto en la entrada combinada (originales [0, n), fantasmas
-// [n, n + n_ghosts)); -1 mientras el vértice no tenga dueño, lo que permite
-// distinguir un vértice nuevo de uno ya existente (punto duplicado).
+// point index in the combined input (originals [0, n), ghosts
+// [n, n + n_ghosts)); -1 until the vertex has an owner, allowing
+// a new vertex to be distinguished from an existing one (duplicate point).
 struct VertexInfo {
     Index id = -1;
 };
@@ -51,14 +51,14 @@ using Vertex_handle = DT::Vertex_handle;
 using Cell_handle = DT::Cell_handle;
 using Duplicates = std::vector<std::array<Index, 2>>;
 
-// Copia periódica de un punto original desplazada una longitud de caja.
+// periodic copy of an original point shifted by one box length.
 struct Ghost {
     double x, y, z;
     Index orig;
 };
 
-// Acceso a los puntos sin copiarlos: los originales se leen del arreglo de
-// entrada y los fantasmas de su propio vector.
+// access points without copying: read originals from the input array
+// and ghosts from their own vector.
 struct PointSource {
     const double* xyz;
     std::size_t n;
@@ -71,7 +71,7 @@ struct PointSource {
     }
 };
 
-// Property map índice -> punto para el ordenamiento espacial de CGAL.
+// index -> point property map for cgal spatial sorting.
 template <class Key>
 struct SourcePmap {
     using key_type = Key;
@@ -82,17 +82,17 @@ struct SourcePmap {
     friend Point get(const SourcePmap& m, Key k) { return (*m.src)(std::size_t(k)); }
 };
 
-// Asigna el índice al vértice devuelto por insert(); si ya tenía dueño, el
-// punto es un duplicado exacto.
+// assign the index to the vertex returned by insert(); if it already
+// had an owner, the point is an exact duplicate.
 inline void claim(Vertex_handle v, Index i, Duplicates& dups) {
     if (v == Vertex_handle()) return;
     if (v->info().id < 0) v->info().id = i;
     else if (v->info().id != i) dups.push_back({i, v->info().id});
 }
 
-// Copias de los puntos a menos de `m` de las caras de [lo, hi), desplazadas
-// ±L en cada eje (hasta 7 por punto en las esquinas). El orden es determinista
-// para un número de hilos dado.
+// copies of points within `m` of the [lo, hi) faces, shifted by ±l on
+// each axis (up to 7 per corner point). order is deterministic for a
+// given thread count.
 std::vector<Ghost> make_ghosts(const double* xyz, Index n, const std::array<double, 3>& lo,
                                const std::array<double, 3>& hi, double m, int threads) {
     const int nt = resolve_threads(threads);
@@ -103,7 +103,7 @@ std::vector<Ghost> make_ghosts(const double* xyz, Index n, const std::array<doub
 #pragma omp for schedule(static)
         for (Index i = 0; i < n; ++i) {
             const double* p = xyz + 3 * i;
-            // Desplazamientos posibles por eje: siempre 0; +L cerca de lo; -L cerca de hi.
+            // possible shifts per axis: always 0; +l near lo; -l near hi.
             int opts[3][3], nopt[3];
             for (int k = 0; k < 3; ++k) {
                 nopt[k] = 0;
@@ -133,8 +133,8 @@ std::vector<Ghost> make_ghosts(const double* xyz, Index n, const std::array<doub
     return out;
 }
 
-// Conjunto de claves con direccionamiento abierto que se vacía en O(1)
-// cambiando de generación. Un ejemplar por hilo, reutilizado en cada vértice.
+// open-addressed key set cleared in o(1) by changing generation.
+// one instance per thread, reused at each vertex.
 class KeySet {
 public:
     KeySet() { reset_capacity(256); }
@@ -147,7 +147,7 @@ public:
         }
     }
 
-    // true si key no estaba en el conjunto.
+    // true if key was absent from the set.
     bool insert(std::uintptr_t key) {
         if (2 * (size_ + 1) > keys_.size()) grow();
         std::size_t h = slot(key);
@@ -189,15 +189,15 @@ private:
 };
 
 struct NeighborScratch {
-    std::vector<Cell_handle> cells;  // cola del BFS
+    std::vector<Cell_handle> cells;  // bfs queue
     KeySet seen_cells, seen_points;
 };
 
 }  // namespace
 
 int auto_lock_grid_cells(Index n) {
-    // Calibrado en un mock cut-sky: 256 celdas por eje es lo óptimo para 6e6 puntos.
-    // El tope de 1024 limita la grilla a 1024^3 enteros de 4 bytes (4 GiB).
+    // calibrated on a cut-sky mock: 256 cells per axis is optimal for 6e6 points.
+    // the 1024 cap limits the grid to 1024^3 4-byte integers (4 gib).
     const double cells = 1.4 * std::cbrt(double(n));
     return int(std::clamp(cells, 64.0, 1024.0));
 }
@@ -207,7 +207,7 @@ struct Delaunay3::Impl {
     bool parallel = false;
     int grid_cells = 0;
     DelaunayOptions opt;
-    std::vector<Index> ghost_orig;  // punto original de cada fantasma
+    std::vector<Index> ghost_orig;  // original point for each ghost
 #ifdef CGAL_LINKED_WITH_TBB
     std::unique_ptr<DT::Lock_data_structure> locks;
 #endif
@@ -215,20 +215,20 @@ struct Delaunay3::Impl {
     Duplicates duplicates;
 
     Impl(const double* xyz, Index n_points, const DelaunayOptions& options) : n(n_points), opt(options) {
-        if (n < 4) throw std::invalid_argument("se necesitan al menos 4 puntos");
+        if (n < 4) throw std::invalid_argument("at least 4 points are required");
         std::vector<Ghost> ghosts;
         if (opt.periodic) {
             for (int k = 0; k < 3; ++k)
                 if (!(opt.box_hi[k] > opt.box_lo[k]) || !(opt.ghost_margin > 0) ||
                     opt.ghost_margin >= opt.box_hi[k] - opt.box_lo[k])
-                    throw std::invalid_argument("caja periódica o margen de fantasmas inválidos");
+                    throw std::invalid_argument("invalid periodic box or ghost margin");
             ghosts = make_ghosts(xyz, n, opt.box_lo, opt.box_hi, opt.ghost_margin, opt.threads);
             ghost_orig.resize(ghosts.size());
             for (std::size_t g = 0; g < ghosts.size(); ++g) ghost_orig[g] = ghosts[g].orig;
         }
         const PointSource src{xyz, std::size_t(n), ghosts.data()};
         const std::size_t total = std::size_t(n) + ghosts.size();
-        // Índices de 32 bits cuando alcanzan: ahorra 4 bytes por punto en el ordenamiento.
+        // use 32-bit indices when possible: save 4 bytes per point during sorting.
         if (total <= std::numeric_limits<std::uint32_t>::max()) build<std::uint32_t>(src, total);
         else build<std::size_t>(src, total);
     }
@@ -280,14 +280,14 @@ struct Delaunay3::Impl {
         return CGAL::Bbox_3(lo[0] - pad, lo[1] - pad, lo[2] - pad, hi[0] + pad, hi[1] + pad, hi[2] + pad);
     }
 
-    // Igual que la inserción paralela de CGAL (Delaunay_triangulation_3::insert_with_info),
-    // pero el índice se asigna antes de soltar los locks y se registran los duplicados.
+    // like cgal parallel insertion (delaunay_triangulation_3::insert_with_info),
+    // but assign the index before releasing locks and record duplicates.
     template <class Key>
     void insert_parallel(const PointSource& src, const std::vector<Key>& order, int threads) {
         locks = std::make_unique<DT::Lock_data_structure>(bounding_box(src, order.size(), threads), grid_cells);
         dt.set_lock_data_structure(locks.get());
 
-        // Primeros puntos en secuencial hasta tener una triangulación 3D.
+        // insert initial points sequentially until the triangulation is 3d.
         std::size_t start = 0;
         Vertex_handle hint;
         while (start < order.size() && (start < 100 || dt.dimension() < 3)) {
@@ -326,8 +326,8 @@ struct Delaunay3::Impl {
     }
 #endif
 
-    // true si la esfera circunscrita de c cabe en la caja ampliada por el margen,
-    // es decir, si c es un tetraedro de la triangulación periódica exacta.
+    // true if the circumsphere of c fits inside the box expanded by the margin,
+    // meaning c is a tetrahedron in the exact periodic triangulation.
     bool circumsphere_inside(Cell_handle c) const {
         const Point center = CGAL::circumcenter(c->vertex(0)->point(), c->vertex(1)->point(),
                                                 c->vertex(2)->point(), c->vertex(3)->point());
@@ -338,10 +338,10 @@ struct Delaunay3::Impl {
         return true;
     }
 
-    // Cuenta los vecinos de v que son data / random recorriendo sus celdas
-    // incidentes con un BFS propio (sin las marcas internas de la TDS, por lo que
-    // es seguro en paralelo). Los fantasmas cuentan como su punto original.
-    // Devuelve false si la estrella de v no es verificablemente exacta (modo periódico).
+    // count v's data / random neighbors by traversing incident cells with a
+    // custom bfs (without internal tds marks, so it is safe in parallel).
+    // ghosts count as their original points. return false if v's star cannot
+    // be verified as exact (periodic mode).
     bool count_neighbors(Vertex_handle v, const std::uint8_t* is_data, NeighborScratch& s, std::int32_t& nd,
                          std::int32_t& nr) const {
         bool verified = true;
@@ -363,7 +363,7 @@ struct Delaunay3::Impl {
                     const Index j = orig(w->info().id);
                     if (j != self && s.seen_points.insert(std::uintptr_t(j) + 1)) ++(is_data[j] ? nd : nr);
                 }
-                // La celda opuesta al vértice k también contiene a v
+                // the cell opposite vertex k also contains v
                 const Cell_handle next = c->neighbor(k);
                 if (s.seen_cells.insert(reinterpret_cast<std::uintptr_t>(&*next))) s.cells.push_back(next);
             }
@@ -389,13 +389,13 @@ const std::vector<std::array<Index, 2>>& Delaunay3::duplicates() const { return 
 
 NeighborCounts Delaunay3::neighbor_counts(const std::uint8_t* is_data, int threads) const {
     const DT& dt = impl_->dt;
-    if (dt.dimension() < 3) throw std::runtime_error("todos los puntos son coplanares");
+    if (dt.dimension() < 3) throw std::runtime_error("all points are coplanar");
     const Index n = impl_->n;
     NeighborCounts out;
     out.ndata.assign(std::size_t(n), 0);
     out.nrand.assign(std::size_t(n), 0);
 
-    // Solo los vértices de puntos originales (los fantasmas no se clasifican).
+    // only vertices of original points (ghosts are not classified).
     std::vector<Vertex_handle> verts;
     verts.reserve(std::size_t(n));
     for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v)
@@ -414,7 +414,7 @@ NeighborCounts Delaunay3::neighbor_counts(const std::uint8_t* is_data, int threa
     }
     out.n_unverified = unverified;
     for (const auto& d : impl_->duplicates) {
-        if (d[0] >= n) continue;  // fantasma duplicado: no se clasifica
+        if (d[0] >= n) continue;  // duplicate ghost: do not classify
         const auto src = std::size_t(impl_->orig(d[1]));
         out.ndata[std::size_t(d[0])] = out.ndata[src];
         out.nrand[std::size_t(d[0])] = out.nrand[src];
@@ -429,7 +429,7 @@ std::vector<Index> Delaunay3::edges() const {
     for (auto e = dt.finite_edges_begin(); e != dt.finite_edges_end(); ++e) {
         const Index ia = e->first->vertex(e->second)->info().id;
         const Index ib = e->first->vertex(e->third)->info().id;
-        if (ia >= n && ib >= n) continue;  // arista entre dos fantasmas
+        if (ia >= n && ib >= n) continue;  // edge between two ghosts
         Index a = impl_->orig(ia), b = impl_->orig(ib);
         if (a == b) continue;
         if (a > b) std::swap(a, b);

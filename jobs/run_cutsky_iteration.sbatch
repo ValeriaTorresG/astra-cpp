@@ -1,9 +1,9 @@
 #!/bin/bash
-# Una iteración de ASTRA (núcleo C++/CGAL) sobre el mock cut-sky BGS de AbacusSummit.
-# Uso:
-#   sbatch jobs/run_cutsky_iteration.sbatch                 # iteración 0
+# one astra iteration (c++/cgal core) on the abacussummit bgs cut-sky mock.
+# usage:
+#   sbatch jobs/run_cutsky_iteration.sbatch                 # iteration 0
 #   ITERATION=3 sbatch jobs/run_cutsky_iteration.sbatch
-#   sbatch --array=0-9%2 jobs/run_cutsky_iteration.sbatch   # iteración = SLURM_ARRAY_TASK_ID
+#   sbatch --array=0-9%2 jobs/run_cutsky_iteration.sbatch   # iteration = SLURM_ARRAY_TASK_ID
 #SBATCH --job-name=astra_cpp_cutsky
 #SBATCH --account=desi
 #SBATCH --qos=debug
@@ -22,7 +22,7 @@ source /pscratch/sd/v/vtorresg/venvs/triang/bin/activate
 export PYTHONPATH=$PWD/python${PYTHONPATH:+:$PYTHONPATH}
 
 ITERATION=${ITERATION:-${SLURM_ARRAY_TASK_ID:-0}}
-THREADS=${THREADS:-128}          # un hilo por núcleo físico
+THREADS=${THREADS:-128}          # one thread per physical core
 REDSHIFT=${REDSHIFT:-Z}
 
 python -m astra_cpp info

@@ -1,4 +1,4 @@
-"""Rutas por defecto, umbrales de ASTRA y configuración de una iteración."""
+"""default paths, astra thresholds, and configuration for one iteration."""
 from __future__ import annotations
 
 import dataclasses
@@ -14,13 +14,13 @@ DEFAULT_CUBIC_BOX = (ABACUS_ROOT / 'CubicBox' / 'BGS' / 'v0' / 'z0.200' /
                      'AbacusSummit_base_c000_ph000' / 'BGS_box_ph000.fits')
 DEFAULT_OUTPUT = Path('/pscratch/sd/v/vtorresg/astra-cpp-runs')
 
-# Los randoms de un mismo archivo semilla tienen TARGETID = -(seed * FACTOR + fila + 1)
+# randoms from the same seed file have targetid = -(seed * factor + row + 1)
 RANDOM_ID_FACTOR = 10_000_000_000
 WEBTYPES = ('void', 'sheet', 'filament', 'knot')
 MAX_TRIANGULATION_THREADS = 64
-# Ancho por defecto de la capa de copias periódicas, en espaciados medios entre
-# puntos. La esfera vacía más grande entre randoms uniformes es ~2 espaciados, así
-# que 8 deja margen; si no alcanzara, la verificación en C++ lo detecta.
+# default periodic copy layer width in mean point spacings. the largest empty
+# sphere among uniform randoms is ~2 spacings, so 8 leaves a margin; the c++
+# verification detects if that margin is insufficient.
 GHOST_SPACINGS = 8.0
 
 
@@ -30,15 +30,15 @@ def default_threads() -> int:
 
 @dataclass
 class AstraParams:
-    """Parámetros comunes a cualquier catálogo."""
+    """parameters shared by all catalogs."""
     iteration: int = 0
-    seed_offset: int = 0          # semilla de la iteración = seed_offset + iteration
+    seed_offset: int = 0          # iteration seed = seed_offset + iteration
     r_lower: float = -0.25
     r_med: float = 0.25
     r_upper: float = 0.65
     threads: int = field(default_factory=default_threads)
     triangulation_threads: int = 0  # <= 0: min(threads, MAX_TRIANGULATION_THREADS)
-    lock_grid_cells: int = 0        # <= 0: automática (∝ N^(1/3))
+    lock_grid_cells: int = 0        # <= 0: automatic (∝ n^(1/3))
     output_dir: Path = DEFAULT_OUTPUT
     save_points: bool = True
     aggregate: bool = True
@@ -47,9 +47,9 @@ class AstraParams:
 
     @property
     def tri_threads(self) -> int:
-        """Hilos de la inserción paralela en CGAL. Más allá de unas decenas la
-        contención de locks crece y puede degenerar en livelock, así que por
-        defecto se limita aunque el resto de etapas use todos los hilos."""
+        """threads for parallel cgal insertion. beyond a few dozen threads,
+        lock contention grows and may cause livelock, so the default is capped
+        even when other stages use all available threads."""
         if self.triangulation_threads > 0:
             return self.triangulation_threads
         return min(self.threads, MAX_TRIANGULATION_THREADS)
@@ -60,19 +60,19 @@ class AstraParams:
 
     def validate(self) -> None:
         if self.iteration < 0:
-            raise ValueError('iteration debe ser >= 0')
+            raise ValueError('iteration must be >= 0')
         if not (self.r_lower < self.r_med < self.r_upper):
-            raise ValueError('se requiere r_lower < r_med < r_upper')
+            raise ValueError('r_lower < r_med < r_upper is required')
         if self.threads <= 0:
-            raise ValueError('threads debe ser positivo')
+            raise ValueError('threads must be positive')
 
 
 @dataclass
 class CutskyConfig(AstraParams):
     real_file: Path = DEFAULT_CUTSKY_REAL
     random_glob: str = DEFAULT_CUTSKY_RANDOM_GLOB
-    redshift: str = 'Z'                    # 'Z' (con RSD) o 'Z_COSMO'
-    max_real_rows: int | None = None       # primeras N filas reales (pruebas)
+    redshift: str = 'Z'                    # 'Z' (with rsd) or 'Z_COSMO'
+    max_real_rows: int | None = None       # first n real rows (tests)
 
     @property
     def run_dir(self) -> Path:
@@ -82,11 +82,11 @@ class CutskyConfig(AstraParams):
 @dataclass
 class CubicConfig(AstraParams):
     box_file: Path = DEFAULT_CUBIC_BOX
-    box_size: float = 2000.0               # Mpc/h (AbacusSummit base)
+    box_size: float = 2000.0               # mpc/h (abacussummit base)
     random_factor: float = 1.0             # n_random = random_factor * n_data
-    periodic: bool = True                  # condiciones periódicas (copias fantasma)
-    ghost_margin: float = 0.0              # capa periódica; <= 0: GHOST_SPACINGS * espaciado medio
-    subbox: float | None = None            # lado de una sub-caja no periódica (pruebas)
+    periodic: bool = True                  # periodic conditions (ghost copies)
+    ghost_margin: float = 0.0              # periodic layer; <= 0: ghost_spacings * mean spacing
+    subbox: float | None = None            # side length of a nonperiodic subbox (tests)
 
     @property
     def run_dir(self) -> Path:

@@ -1,4 +1,4 @@
-"""Línea de comandos: `python -m astra_cpp {cutsky,cubic,aggregate,info} ...`."""
+"""command line: `python -m astra_cpp {cutsky,cubic,aggregate,info} ...`."""
 from __future__ import annotations
 
 import argparse
@@ -9,23 +9,23 @@ from .config import (DEFAULT_CUBIC_BOX, DEFAULT_CUTSKY_RANDOM_GLOB, DEFAULT_CUTS
 
 
 def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument('--iteration', type=int, default=0, help='iteración de randoms (define la semilla)')
-    p.add_argument('--seed-offset', type=int, default=0, help='semilla = seed-offset + iteration')
+    p.add_argument('--iteration', type=int, default=0, help='random iteration (determines the seed)')
+    p.add_argument('--seed-offset', type=int, default=0, help='seed = seed-offset + iteration')
     p.add_argument('--threads', type=int, default=default_threads())
     p.add_argument('--triangulation-threads', type=int, default=0,
-                   help='hilos de la inserción en CGAL (0: min(threads, 64))')
+                   help='cgal insertion threads (0: min(threads, 64))')
     p.add_argument('--lock-grid-cells', type=int, default=0,
-                   help='resolución por eje de la grilla de locks (0: automática ∝ N^(1/3))')
+                   help='lock grid resolution per axis (0: automatic ∝ n^(1/3))')
     p.add_argument('--r-lower', type=float, default=-0.25)
     p.add_argument('--r-med', type=float, default=0.25)
     p.add_argument('--r-upper', type=float, default=0.65)
     p.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT)
     p.add_argument('--no-save-points', dest='save_points', action='store_false',
-                   help='no guardar posiciones (solo la clasificación)')
+                   help='do not save positions (classification only)')
     p.add_argument('--no-aggregate', dest='aggregate', action='store_false',
-                   help='no recalcular las probabilidades al terminar')
-    p.add_argument('--overwrite', action='store_true', help='repetir aunque la iteración ya esté completa')
-    p.add_argument('--log-interval', type=float, default=30.0, help='segundos entre registros de recursos')
+                   help='do not recompute probabilities at the end')
+    p.add_argument('--overwrite', action='store_true', help='rerun even if the iteration is complete')
+    p.add_argument('--log-interval', type=float, default=30.0, help='seconds between resource logs')
 
 
 def _params(args, names) -> dict:
@@ -40,29 +40,29 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog='python -m astra_cpp', description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
 
-    p = sub.add_parser('cutsky', help='una iteración sobre un mock cut-sky + pool de randoms')
+    p = sub.add_parser('cutsky', help='one iteration on a cut-sky mock + random pool')
     _common(p)
     p.add_argument('--real-file', type=Path, default=DEFAULT_CUTSKY_REAL)
     p.add_argument('--random-glob', default=DEFAULT_CUTSKY_RANDOM_GLOB)
     p.add_argument('--redshift', choices=('Z', 'Z_COSMO'), default='Z')
-    p.add_argument('--max-real-rows', type=int, default=None, help='primeras N filas reales (pruebas)')
+    p.add_argument('--max-real-rows', type=int, default=None, help='first n real rows (tests)')
 
-    p = sub.add_parser('cubic', help='una iteración sobre una caja cúbica + randoms uniformes')
+    p = sub.add_parser('cubic', help='one iteration on a cubic box + uniform randoms')
     _common(p)
     p.add_argument('--box-file', type=Path, default=DEFAULT_CUBIC_BOX)
     p.add_argument('--box-size', type=float, default=2000.0)
     p.add_argument('--random-factor', type=float, default=1.0)
     p.add_argument('--no-periodic', dest='periodic', action='store_false',
-                   help='triangular la caja sin condiciones periódicas')
-    p.add_argument('--subbox', type=float, default=None, help='lado de una sub-caja no periódica (pruebas)')
+                   help='triangulate the box without periodic conditions')
+    p.add_argument('--subbox', type=float, default=None, help='side length of a nonperiodic subbox (tests)')
     p.add_argument('--ghost-margin', type=float, default=0.0,
-                   help='ancho de la capa de copias periódicas (0: 8 espaciados medios)')
+                   help='periodic copy layer width (0: 8 mean spacings)')
 
-    p = sub.add_parser('aggregate', help='probabilidades a partir de las iteraciones completas')
+    p = sub.add_parser('aggregate', help='probabilities from completed iterations')
     p.add_argument('run_dir', type=Path)
     p.add_argument('--threads', type=int, default=default_threads())
 
-    sub.add_parser('info', help='versión de CGAL y capacidades del núcleo compilado')
+    sub.add_parser('info', help='cgal version and compiled core capabilities')
 
     args = parser.parse_args(argv)
     if args.command == 'info':

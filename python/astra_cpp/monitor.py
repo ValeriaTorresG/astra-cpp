@@ -1,4 +1,4 @@
-"""Logging, medición de etapas y monitor de recursos (RSS, CPU, memoria del nodo)."""
+"""logging, stage timing, and resource monitoring (rss, cpu, node memory)."""
 from __future__ import annotations
 
 import contextlib
@@ -16,7 +16,7 @@ def gib(nbytes: float) -> str:
 
 
 def peak_rss_bytes() -> int:
-    # En Linux ru_maxrss está en KiB
+    # on linux, ru_maxrss is in kib
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
 
 
@@ -63,10 +63,10 @@ def setup_logger(log_path: Path | None = None, name: str = 'astra_cpp') -> loggi
 
 
 class ResourceMonitor:
-    """Registra tiempos por etapa y, en un hilo aparte, el uso de recursos cada `interval` s.
+    """record stage times and resource usage every `interval` s in a separate thread.
 
-    Las etapas de C++ liberan el GIL, así que el latido sigue funcionando
-    mientras CGAL triangula.
+    c++ stages release the gil, so the heartbeat continues while cgal
+    triangulates.
     """
 
     def __init__(self, logger: logging.Logger, interval: float = 30.0):

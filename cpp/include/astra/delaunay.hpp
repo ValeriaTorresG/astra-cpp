@@ -1,14 +1,14 @@
-// Triangulación de Delaunay 3D con CGAL y conteo de vecinos de ASTRA.
+// 3d delaunay triangulation with cgal and astra neighbor counts.
 //
-// Cada vértice guarda el índice original de su punto, de modo que los conteos
-// NDATA/NRAND salen alineados con el arreglo de entrada sin materializar
-// aristas. Los tipos de CGAL quedan ocultos tras un puntero opaco (pimpl).
+// each vertex stores its point's original index, so ndata/nrand counts align
+// with the input array without materializing edges. cgal types remain hidden
+// behind an opaque pointer (pimpl).
 //
-// Modo periódico (cajas cúbicas): se agregan copias fantasma de los puntos a
-// menos de `ghost_margin` de cada cara y los vecinos fantasma se cuentan como
-// su punto original. Al contar se verifica que la estrella de cada punto sea
-// la de la triangulación periódica exacta (todas sus esferas circunscritas
-// caben en la caja ampliada); los que no pasan se reportan en `n_unverified`.
+// periodic mode (cubic boxes): add ghost copies of points within
+// `ghost_margin` of each face and count ghost neighbors as their original
+// points. while counting, verify that each point's star matches the exact
+// periodic triangulation (all circumspheres fit in the expanded box);
+// report failures in `n_unverified`.
 #pragma once
 
 #include <array>
@@ -22,29 +22,29 @@
 namespace astra {
 
 struct DelaunayOptions {
-    int threads = 0;          // <= 1: inserción secuencial; > 1: paralela (requiere TBB)
-    // Resolución por eje de la grilla de locks (modo paralelo). <= 0: automática,
-    // proporcional a N^(1/3) para que cada celda de lock cubra un número similar de
-    // puntos; con celdas grandes la contención entre hilos colapsa la inserción.
+    int threads = 0;          // <= 1: sequential insertion; > 1: parallel (requires tbb)
+    // lock grid resolution per axis (parallel mode). <= 0: automatic,
+    // proportional to n^(1/3) so each lock cell covers a similar number
+    // of points; large cells cause thread contention and stall insertion.
     int lock_grid_cells = 0;
-    bool periodic = false;    // caja periódica [box_lo, box_hi)
+    bool periodic = false;    // periodic box [box_lo, box_hi)
     std::array<double, 3> box_lo{}, box_hi{};
-    double ghost_margin = 0;  // ancho de la capa de copias fantasma (modo periódico)
+    double ghost_margin = 0;  // ghost copy layer width (periodic mode)
 };
 
-// Resolución automática de la grilla de locks para n puntos.
+// automatic lock grid resolution for n points.
 int auto_lock_grid_cells(Index n);
 
 struct NeighborCounts {
     std::vector<std::int32_t> ndata;
     std::vector<std::int32_t> nrand;
-    Index n_unverified = 0;   // modo periódico: puntos cuya estrella no se pudo verificar
+    Index n_unverified = 0;   // periodic mode: points whose star could not be verified
 };
 
 class Delaunay3 {
 public:
-    // xyz: n puntos contiguos (x, y, z) en double. Solo se lee durante la
-    // construcción (CGAL guarda su propia copia de cada punto).
+    // xyz: n contiguous (x, y, z) points as doubles. read only during
+    // construction (cgal stores its own copy of each point).
     Delaunay3(const double* xyz, Index n, const DelaunayOptions& options);
     ~Delaunay3();
     Delaunay3(const Delaunay3&) = delete;
@@ -52,23 +52,23 @@ public:
 
     Index n_points() const;
     Index n_ghosts() const;
-    int lock_grid_cells() const;  // 0 si la inserción fue secuencial
+    int lock_grid_cells() const;  // 0 if insertion was sequential
     bool parallel() const;
     std::size_t number_of_vertices() const;
     std::size_t number_of_finite_cells() const;
     std::size_t number_of_finite_edges() const;
     bool is_valid() const;
 
-    // Puntos que coinciden exactamente con otro ya insertado: (punto, vértice canónico).
-    // Heredan los conteos del punto canónico.
+    // points identical to an already inserted point: (point, canonical vertex).
+    // inherit counts from the canonical point.
     const std::vector<std::array<Index, 2>>& duplicates() const;
 
-    // NDATA y NRAND por punto: vecinos de Delaunay finitos que son data / random.
+    // ndata and nrand per point: finite delaunay neighbors that are data / random.
     NeighborCounts neighbor_counts(const std::uint8_t* is_data, int threads) const;
 
-    // Aristas (i, j) con i < j en índices originales, únicas y ordenadas, aplanadas
-    // (para validación en muestras pequeñas). En modo periódico incluye las
-    // aristas que cruzan la caja.
+    // edges (i, j) with i < j in original indices, unique, sorted, and flattened
+    // (for validation on small samples). periodic mode includes edges crossing
+    // the box.
     std::vector<Index> edges() const;
 
 private:

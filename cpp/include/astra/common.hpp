@@ -1,4 +1,4 @@
-// Tipos y utilidades compartidas por todos los módulos del núcleo de ASTRA.
+// types and utilities shared by all astra core modules.
 #pragma once
 
 #include <cstddef>
@@ -6,17 +6,17 @@
 
 namespace astra {
 
-// Índice de fila / punto. Con signo para poder usar -1 como centinela.
+// row / point index. signed to allow -1 as a sentinel.
 using Index = std::int64_t;
 
-// Clases de la red cósmica en el mismo orden que ASTRA (WEBTYPE).
+// cosmic web classes in the same order as astra (webtype).
 enum WebType : std::uint8_t { kVoid = 0, kSheet = 1, kFilament = 2, kKnot = 3 };
 inline constexpr int kNumWebTypes = 4;
 
-// Número de hilos efectivo: <= 0 significa "todos los que permita OpenMP".
+// effective thread count: <= 0 means all threads allowed by openmp.
 int resolve_threads(int requested);
 
-// true si el núcleo se compiló con TBB (triangulación CGAL paralela).
+// true if the core was built with tbb (parallel cgal triangulation).
 bool has_parallel_triangulation();
 
 }  // namespace astra

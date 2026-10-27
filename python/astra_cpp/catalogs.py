@@ -1,7 +1,8 @@
-"""Construcción del catálogo data + randoms de una iteración.
+"""
+build the data + random catalog for one iteration.
 
-Toda la E/S de FITS, el muestreo del pool de randoms y el paso a coordenadas
-cartesianas se hacen en C++ (`_core`); aquí solo se arman los arrays.
+all fits i/o, random pool sampling, and cartesian coordinate conversion happen
+in c++ (`_core`); this module only assembles the arrays.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from .config import GHOST_SPACINGS, RANDOM_ID_FACTOR, CubicConfig, CutskyConfig
 from .monitor import ResourceMonitor, gib
 
 
-# Columnas de posición de las cajas de AbacusSummit (Mpc/h)
+# position columns for abacussummit boxes (mpc/h)
 CUBIC_COLUMNS = ('x', 'y', 'z')
 
 
@@ -31,14 +32,14 @@ class PeriodicBox:
 
 @dataclass
 class Catalog:
-    """Puntos de una iteración. Las primeras `n_data` filas son siempre la muestra real."""
-    targetid: np.ndarray                 # int64; reales > 0, randoms < 0
+    """points for one iteration. the first `n_data` rows are always the real sample."""
+    targetid: np.ndarray                 # int64; real objects > 0, randoms < 0
     is_data: np.ndarray                  # bool
-    xyz: np.ndarray | None               # (N, 3) float64, se libera tras triangular
+    xyz: np.ndarray | None               # (n, 3) float64, released after triangulation
     n_data: int
-    columns: dict[str, np.ndarray] = field(default_factory=dict)  # columnas extra para guardar
+    columns: dict[str, np.ndarray] = field(default_factory=dict)  # extra columns to save
     meta: dict = field(default_factory=dict)
-    box: PeriodicBox | None = None       # caja periódica (solo cajas cúbicas completas)
+    box: PeriodicBox | None = None       # periodic box (full cubic boxes only)
 
     @property
     def size(self) -> int:
@@ -62,34 +63,34 @@ class RandomSource:
 def seed_of(path: Path) -> int:
     match = re.fullmatch(r'random_S(\d+)_\d+X\.fits', path.name)
     if not match:
-        raise ValueError(f'No se puede extraer la semilla de {path.name}')
+        raise ValueError(f'cannot extract the seed from {path.name}')
     return int(match.group(1))
 
 
 def discover_randoms(pattern: str, required: list[str]) -> list[RandomSource]:
     paths = sorted((Path(p) for p in glob.glob(pattern)), key=seed_of)
     if not paths:
-        raise FileNotFoundError(f'Ningún archivo coincide con {pattern}')
+        raise FileNotFoundError(f'no files match {pattern}')
     sources = []
     for path in paths:
         table = _core.FitsTable(str(path))
         missing = [c for c in required if not table.has_column(c)]
         if missing:
-            raise ValueError(f'{path.name} no tiene las columnas {missing}')
+            raise ValueError(f'{path.name} is missing columns {missing}')
         if table.nrows >= RANDOM_ID_FACTOR:
-            raise ValueError(f'{path.name} tiene demasiadas filas para TARGETID estables')
+            raise ValueError(f'{path.name} has too many rows for stable TARGETIDs')
         sources.append(RandomSource(seed_of(path), table))
     return sources
 
 
 def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) -> Catalog:
-    """Muestra real completa + un pool de randoms del mismo tamaño, muestreado
-    sin reemplazo y de forma uniforme sobre la unión de todos los archivos semilla."""
+    """full real sample + an equally sized random pool, sampled uniformly without
+    replacement from the union of all seed files."""
     columns = ['RA', 'DEC', cfg.redshift]
     real = _core.FitsTable(str(cfg.real_file))
     missing = [c for c in columns if not real.has_column(c)]
     if missing:
-        raise ValueError(f'{cfg.real_file.name} no tiene las columnas {missing}')
+        raise ValueError(f'{cfg.real_file.name} is missing columns {missing}')
     n_real = min(real.nrows, cfg.max_real_rows) if cfg.max_real_rows else real.nrows
     sources = discover_randoms(cfg.random_glob, columns)
     pool_size = sum(s.nrows for s in sources)
@@ -132,19 +133,19 @@ def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) ->
 
 
 def _box_bounds(xyz_data: np.ndarray, box_size: float) -> tuple[np.ndarray, np.ndarray]:
-    """Caja [lo, lo + L)^3 de AbacusSummit: centrada en 0 o con esquina en 0."""
+    """abacussummit [lo, lo + l)^3 box: centered at 0 or with a corner at 0."""
     lo_data, hi_data = float(xyz_data.min()), float(xyz_data.max())
     origin = 0.0 if lo_data >= 0 else -box_size / 2
     lo, hi = np.full(3, origin), np.full(3, origin + box_size)
     tol = 1e-6 * box_size
     if lo_data < origin - tol or hi_data > origin + box_size + tol:
-        raise ValueError(f'Galaxias en [{lo_data}, {hi_data}], fuera de la caja '
-                         f'[{origin}, {origin + box_size}]; revisa --box-size')
+        raise ValueError(f'galaxies in [{lo_data}, {hi_data}] are outside the box '
+                         f'[{origin}, {origin + box_size}]; check --box-size')
     return lo, hi
 
 
 def _target_ids(n_data: int, n_random: int, data_ids: np.ndarray | None = None) -> np.ndarray:
-    """Reales: fila del archivo + 1. Randoms: -(1..n_random). Sin temporales grandes."""
+    """real objects: file row + 1. randoms: -(1..n_random). no large temporaries."""
     targetid = np.arange(1, n_data + n_random + 1, dtype=np.int64)
     if data_ids is not None:
         targetid[:n_data] = data_ids
@@ -155,17 +156,16 @@ def _target_ids(n_data: int, n_random: int, data_ids: np.ndarray | None = None) 
 
 
 def load_cubic(cfg: CubicConfig, log: logging.Logger, mon: ResourceMonitor) -> Catalog:
-    """Caja cúbica de AbacusSummit + randoms uniformes en la caja.
+    """abacussummit cubic box + uniform randoms within the box.
 
-    Caja completa (periódica): x, y, z se leen directo en las columnas del
-    arreglo final de posiciones, se envuelven a [lo, hi) y los randoms se
-    generan en sitio a continuación, sin copias intermedias. Con --subbox se
-    toma una sub-caja (no periódica) para pruebas.
+    full box (periodic): read x, y, z directly into the final position array,
+    wrap them into [lo, hi), then generate randoms in place without intermediate
+    copies. --subbox selects a nonperiodic subbox for tests.
     """
     table = _core.FitsTable(str(cfg.box_file))
     missing = [c for c in CUBIC_COLUMNS if not table.has_column(c)]
     if missing:
-        raise ValueError(f'{cfg.box_file.name} no tiene las columnas {missing}')
+        raise ValueError(f'{cfg.box_file.name} is missing columns {missing}')
     n_all = table.nrows
 
     if cfg.subbox:

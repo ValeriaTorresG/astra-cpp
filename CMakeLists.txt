@@ -8,13 +8,13 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# CGAL es header-only; GMP/MPFR los necesita el kernel Epick para los predicados exactos.
-set(CGAL_INCLUDE_DIR "" CACHE PATH "Directorio include de CGAL")
-set(GMP_PREFIX "" CACHE PATH "Prefijo con include/ y lib/ de GMP y MPFR")
-option(ASTRA_WITH_TBB "Triangulación CGAL paralela con TBB" ON)
+# cgal is header-only; the epick kernel needs gmp/mpfr for exact predicates.
+set(CGAL_INCLUDE_DIR "" CACHE PATH "cgal include directory")
+set(GMP_PREFIX "" CACHE PATH "prefix containing gmp and mpfr include/ and lib/")
+option(ASTRA_WITH_TBB "parallel cgal triangulation with tbb" ON)
 
 if(NOT EXISTS "${CGAL_INCLUDE_DIR}/CGAL/version.h")
-  message(FATAL_ERROR "CGAL_INCLUDE_DIR no apunta a los headers de CGAL: '${CGAL_INCLUDE_DIR}'")
+  message(FATAL_ERROR "CGAL_INCLUDE_DIR does not point to cgal headers: '${CGAL_INCLUDE_DIR}'")
 endif()
 
 find_package(OpenMP REQUIRED)
@@ -23,7 +23,7 @@ find_package(pybind11 CONFIG REQUIRED)
 find_library(GMP_LIB gmp HINTS "${GMP_PREFIX}/lib" REQUIRED)
 find_library(MPFR_LIB mpfr HINTS "${GMP_PREFIX}/lib" REQUIRED)
 
-# ---------------------------------------------------------------- núcleo C++
+# ---------------------------------------------------------------- c++ core
 add_library(astra_core STATIC
   cpp/src/common.cpp
   cpp/src/box.cpp
@@ -44,7 +44,7 @@ if(ASTRA_WITH_TBB)
   target_link_libraries(astra_core PUBLIC TBB::tbb TBB::tbbmalloc)
 endif()
 
-# ---------------------------------------------------------------- módulo Python
+# ---------------------------------------------------------------- python module
 pybind11_add_module(_core cpp/bindings/module.cpp)
 target_link_libraries(_core PRIVATE astra_core)
 get_filename_component(GMP_LIB_DIR "${GMP_LIB}" DIRECTORY)

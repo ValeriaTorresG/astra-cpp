@@ -1,6 +1,6 @@
-// Módulo pybind11 `astra_cpp._core`: expone el núcleo C++ como funciones que
-// reciben y devuelven arrays NumPy sin copias. Todas las etapas pesadas
-// liberan el GIL.
+// pybind11 module `astra_cpp._core`: expose the c++ core as functions that
+// receive and return numpy arrays without copies. all costly stages
+// release the gil.
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -30,7 +30,7 @@ namespace {
 template <class T>
 using CArray = py::array_t<T, py::array::c_style | py::array::forcecast>;
 
-// Entrega la memoria de un std::vector a NumPy (sin copiar).
+// hand ownership of std::vector memory to numpy (without copying).
 template <class T>
 py::array_t<T> to_numpy(std::vector<T>&& v, std::vector<py::ssize_t> shape) {
     auto* owner = new std::vector<T>(std::move(v));
@@ -46,54 +46,54 @@ py::array_t<T> to_numpy(std::vector<T>&& v) {
 
 void require_1d(const py::array& a, py::ssize_t n, const char* name) {
     if (a.ndim() != 1 || a.shape(0) != n)
-        throw std::invalid_argument(std::string(name) + " debe tener shape (" + std::to_string(n) + ",)");
+        throw std::invalid_argument(std::string(name) + " must have shape (" + std::to_string(n) + ",)");
 }
 
 const double* points_ptr(const CArray<double>& pts) {
-    if (pts.ndim() != 2 || pts.shape(1) != 3) throw std::invalid_argument("points debe tener shape (N, 3)");
+    if (pts.ndim() != 2 || pts.shape(1) != 3) throw std::invalid_argument("points must have shape (N, 3)");
     return pts.data();
 }
 
-// Array de salida escrito en sitio: se exige dtype, contigüidad y escritura
-// exactos para no escribir sobre una copia temporal.
+// output array written in place: require the exact dtype, contiguity, and
+// writability to avoid writing into a temporary copy.
 template <class T>
 py::array_t<T> writable_array(const py::handle& obj, py::ssize_t ndim, const char* name) {
     if (!py::isinstance<py::array_t<T>>(obj))
-        throw std::invalid_argument(std::string(name) + ": dtype incorrecto");
+        throw std::invalid_argument(std::string(name) + ": incorrect dtype");
     auto arr = py::reinterpret_borrow<py::array_t<T>>(obj);
     if (arr.ndim() != ndim || !(arr.flags() & py::array::c_style) || !arr.writeable())
-        throw std::invalid_argument(std::string(name) + ": debe ser contiguo, escribible y de " +
-                                    std::to_string(ndim) + " dimensiones");
+        throw std::invalid_argument(std::string(name) + ": must be contiguous, writable, and " +
+                                    std::to_string(ndim) + "-dimensional");
     return arr;
 }
 
-// Columna float64 1D escribible en sitio, contigua o con paso (p. ej. xyz[:, 0]).
+// writable 1d float64 column in place, contiguous or strided (e.g. xyz[:, 0]).
 py::array_t<double> writable_column(const py::handle& obj, const char* name) {
-    if (!py::isinstance<py::array_t<double>>(obj)) throw std::invalid_argument(std::string(name) + ": dtype incorrecto");
+    if (!py::isinstance<py::array_t<double>>(obj)) throw std::invalid_argument(std::string(name) + ": incorrect dtype");
     auto arr = py::reinterpret_borrow<py::array_t<double>>(obj);
     if (arr.ndim() != 1 || !arr.writeable() || arr.strides(0) <= 0 || arr.strides(0) % py::ssize_t(sizeof(double)))
-        throw std::invalid_argument(std::string(name) + ": debe ser 1D, escribible y con paso positivo");
+        throw std::invalid_argument(std::string(name) + ": must be 1D, writable, and have a positive stride");
     return arr;
 }
 
-// Arreglo (N, 3) float64 contiguo y escribible en sitio.
+// contiguous writable (n, 3) float64 array in place.
 double* writable_points(const py::handle& obj, const char* name, py::ssize_t& n) {
     auto arr = writable_array<double>(obj, 2, name);
-    if (arr.shape(1) != 3) throw std::invalid_argument(std::string(name) + " debe tener shape (N, 3)");
+    if (arr.shape(1) != 3) throw std::invalid_argument(std::string(name) + " must have shape (N, 3)");
     n = arr.shape(0);
     return arr.mutable_data();
 }
 
 py::array_t<double> new_points(Index n) { return py::array_t<double>({py::ssize_t(n), py::ssize_t(3)}); }
 
-// ---------------------------------------------------------------- FITS
+// ---------------------------------------------------------------- fits
 void py_read_columns(const py::list& requests, const std::vector<std::string>& names, const py::list& outputs,
                      int threads, std::size_t block_mb) {
     std::vector<FitsReadRequest> reqs;
-    std::vector<CArray<Index>> keep_rows;  // mantiene vivas las filas convertidas
+    std::vector<CArray<Index>> keep_rows;  // keep converted row arrays alive
     for (const auto& item : requests) {
         auto tup = item.cast<py::tuple>();
-        if (tup.size() != 3) throw std::invalid_argument("cada petición es (FitsTable, rows | None, out_offset)");
+        if (tup.size() != 3) throw std::invalid_argument("each request must be (FitsTable, rows | None, out_offset)");
         FitsReadRequest r;
         r.table = &tup[0].cast<const FitsTable&>();
         r.out_offset = tup[2].cast<Index>();
@@ -103,26 +103,26 @@ void py_read_columns(const py::list& requests, const std::vector<std::string>& n
         } else {
             keep_rows.push_back(tup[1].cast<CArray<Index>>());
             const auto& rows = keep_rows.back();
-            if (rows.ndim() != 1) throw std::invalid_argument("rows debe ser 1D");
+            if (rows.ndim() != 1) throw std::invalid_argument("rows must be 1D");
             r.rows = rows.data();
             r.n_rows = rows.shape(0);
         }
         reqs.push_back(r);
     }
-    if (outputs.size() != names.size()) throw std::invalid_argument("una salida por columna");
+    if (outputs.size() != names.size()) throw std::invalid_argument("one output per column is required");
     std::vector<OutputColumn> outs;
     for (const auto& o : outputs) {
         auto arr = writable_column(o, "outputs");
         for (const auto& r : reqs)
             if (r.out_offset < 0 || r.out_offset + r.n_rows > arr.shape(0))
-                throw std::out_of_range("la salida es demasiado corta para las filas pedidas");
+                throw std::out_of_range("the output is too short for the requested rows");
         outs.push_back({arr.mutable_data(), arr.strides(0) / py::ssize_t(sizeof(double))});
     }
     py::gil_scoped_release release;
     read_columns(reqs, names, outs, threads, block_mb << 20);
 }
 
-// ---------------------------------------------------------------- Delaunay
+// ---------------------------------------------------------------- delaunay
 class PyDelaunay3 {
 public:
     PyDelaunay3(const CArray<double>& points, int threads, int lock_grid_cells,
@@ -134,7 +134,7 @@ public:
         opt.threads = threads;
         opt.lock_grid_cells = lock_grid_cells;
         if (box_lo.has_value() != box_hi.has_value())
-            throw std::invalid_argument("box_lo y box_hi van juntos");
+            throw std::invalid_argument("box_lo and box_hi must be provided together");
         if (box_lo) {
             opt.periodic = true;
             opt.box_lo = *box_lo;
@@ -181,7 +181,7 @@ public:
 
 private:
     std::unique_ptr<Delaunay3> dt_;
-    mutable Index n_unverified_ = -1;  // se conoce tras neighbor_counts
+    mutable Index n_unverified_ = -1;  // known after neighbor_counts
 };
 
 }  // namespace
@@ -193,7 +193,7 @@ PYBIND11_MODULE(_core, m) {
     m.def("max_threads", [] { return resolve_threads(0); });
     m.def("auto_lock_grid_cells", &auto_lock_grid_cells, py::arg("n"));
 
-    // FITS
+    // fits
     py::class_<FitsTable>(m, "FitsTable")
         .def(py::init<std::string, int>(), py::arg("path"), py::arg("hdu") = 1)
         .def_property_readonly("path", &FitsTable::path)
@@ -210,7 +210,7 @@ PYBIND11_MODULE(_core, m) {
           "Lee columnas numéricas de varias tablas FITS como float64.\n"
           "requests: lista de (FitsTable, rows int64 crecientes | None, out_offset).");
 
-    // Cosmología
+    // cosmology
     py::class_<FlatLambdaCDM>(m, "FlatLambdaCDM")
         .def(py::init<double, double, double, double, std::vector<double>>(), py::arg("H0"), py::arg("Om0"),
              py::arg("Tcmb0"), py::arg("Neff"), py::arg("m_nu"))
@@ -235,7 +235,7 @@ PYBIND11_MODULE(_core, m) {
     }, py::arg("ra"), py::arg("dec"), py::arg("z"), py::arg("cosmo"), py::arg("threads") = 0,
        "(RA, DEC) en grados y z -> coordenadas comóviles (N, 3) en Mpc");
 
-    // Randoms
+    // randoms
     m.def("sample_pool", [](const std::vector<Index>& sizes, Index n, std::uint64_t seed) {
         std::vector<std::vector<Index>> rows;
         {
@@ -272,7 +272,7 @@ PYBIND11_MODULE(_core, m) {
     }, py::arg("points"), py::arg("lo"), py::arg("hi"), py::arg("threads") = 0,
        "Lleva en sitio cada punto de points (N, 3) a la caja [lo, hi) por periodicidad");
 
-    // Delaunay
+    // delaunay
     py::class_<PyDelaunay3>(m, "Delaunay3")
         .def(py::init<const CArray<double>&, int, int, std::optional<std::array<double, 3>>,
                       std::optional<std::array<double, 3>>, double>(),
@@ -301,7 +301,7 @@ PYBIND11_MODULE(_core, m) {
             return d.get().is_valid();
         });
 
-    // Clasificación
+    // classification
     m.def("classify", [](const CArray<std::int32_t>& ndata, const CArray<std::int32_t>& nrand, float r_lower,
                          float r_med, float r_upper, int threads) {
         const py::ssize_t n = ndata.size();
@@ -321,14 +321,14 @@ PYBIND11_MODULE(_core, m) {
         auto counts = writable_array<std::uint16_t>(counts_obj, 2, "counts");
         const py::ssize_t n = webtype.size();
         if (counts.shape(0) != n || counts.shape(1) != kNumWebTypes)
-            throw std::invalid_argument("counts debe tener shape (N, 4)");
+            throw std::invalid_argument("counts must have shape (N, 4)");
         std::uint16_t* c = counts.mutable_data();
         py::gil_scoped_release release;
         accumulate_webtypes(webtype.data(), std::size_t(n), c, threads);
     }, py::arg("counts"), py::arg("webtype"), py::arg("threads") = 0);
     m.def("counts_to_probabilities", [](const CArray<std::uint16_t>& counts, int n_iterations, int threads) {
-        if (counts.ndim() != 2 || counts.shape(1) != kNumWebTypes) throw std::invalid_argument("counts debe ser (N, 4)");
-        if (n_iterations <= 0) throw std::invalid_argument("n_iterations debe ser positivo");
+        if (counts.ndim() != 2 || counts.shape(1) != kNumWebTypes) throw std::invalid_argument("counts must have shape (N, 4)");
+        if (n_iterations <= 0) throw std::invalid_argument("n_iterations must be positive");
         const py::ssize_t n = counts.shape(0);
         py::array_t<float> prob({n, py::ssize_t(kNumWebTypes)});
         float* p = prob.mutable_data();

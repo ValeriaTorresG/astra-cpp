@@ -3,3 +3,7 @@ build/
 __pycache__/
 *.pyc
 *.tmp.*
+plots/r_distribution_cache/
+plots/delta_z_cache/
+plots/nz_cache/
+plots/sky_slice_cache/

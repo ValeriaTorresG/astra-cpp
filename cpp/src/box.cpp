@@ -13,7 +13,7 @@ void wrap_periodic(double* xyz, Index n, const std::array<double, 3>& lo, const 
             double& x = xyz[3 * i + k];
             if (x >= lo[k] && x < hi[k]) continue;
             x = lo[k] + (x - lo[k]) - L[k] * std::floor((x - lo[k]) / L[k]);
-            if (x >= hi[k]) x = lo[k];  // redondeo justo en el borde superior
+            if (x >= hi[k]) x = lo[k];  // round exactly at the upper boundary
         }
     }
 }

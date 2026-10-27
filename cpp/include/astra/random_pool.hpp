@@ -1,4 +1,4 @@
-// Generación de los randoms de cada iteración de ASTRA.
+// generate randoms for each astra iteration.
 #pragma once
 
 #include <cstdint>
@@ -8,16 +8,16 @@
 
 namespace astra {
 
-// Muestra uniforme de `n` filas distintas (sin reemplazo) de un pool formado
-// por la concatenación de varias fuentes de tamaños `sizes`, igual que el
-// pooling de ASTRA (rng.choice(total, n, replace=False) sobre el pool unido).
-// Devuelve, por fuente, las filas locales seleccionadas en orden creciente.
-// El resultado depende solo de (sizes, n, seed).
+// uniform sample of `n` distinct rows (without replacement) from a pool
+// formed by concatenating sources of sizes `sizes`, as in astra pooling
+// (rng.choice(total, n, replace=false) over the combined pool).
+// return selected local rows for each source in ascending order.
+// the result depends only on (sizes, n, seed).
 std::vector<std::vector<Index>> sample_pool(const std::vector<Index>& sizes, Index n,
                                             std::uint64_t seed);
 
-// n puntos uniformes en la caja [lo, hi) (xyz de tamaño 3n). Generador basado
-// en contador: el resultado no depende del número de hilos.
+// n uniform points in the [lo, hi) box (xyz of size 3n). counter-based
+// generator: the result does not depend on the thread count.
 void uniform_box(Index n, const double lo[3], const double hi[3], std::uint64_t seed,
                  double* xyz, int threads);
 

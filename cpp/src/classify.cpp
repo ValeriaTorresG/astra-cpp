@@ -8,7 +8,7 @@ void classify(const std::int32_t* ndata, const std::int32_t* nrand, std::size_t 
               float* r, std::uint8_t* webtype, int threads) {
 #pragma omp parallel for num_threads(resolve_threads(threads)) schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
-        // Mismas operaciones float32 que NumPy: (nd - nr) / (nd + nr).
+        // same float32 operations as numpy: (nd - nr) / (nd + nr).
         const float nd = float(ndata[i]), nr = float(nrand[i]);
         const float denom = nd + nr;
         const float ratio = denom > 0.0f ? (nd - nr) / denom : 0.0f;

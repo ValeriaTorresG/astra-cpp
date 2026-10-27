@@ -1,10 +1,10 @@
 #!/bin/bash
-# Una iteración de ASTRA (núcleo C++/CGAL) sobre la caja cúbica BGS de AbacusSummit.
-# La caja completa son 232M galaxias + 232M randoms uniformes, más ~6 % de copias
-# periódicas (~493M puntos): pico de ~340 GB, necesita un nodo CPU completo.
-#   sbatch jobs/run_cubic_iteration.sbatch                # caja completa, iteración 0
+# one astra iteration (c++/cgal core) on the abacussummit bgs cubic box.
+# the full box has 232m galaxies + 232m uniform randoms, plus ~6% periodic
+# copies (~493m points): ~340 gb peak, requiring a full cpu node.
+#   sbatch jobs/run_cubic_iteration.sbatch                # full box, iteration 0
 #   ITERATION=1 sbatch jobs/run_cubic_iteration.sbatch
-#   sbatch jobs/run_cubic_iteration.sbatch --subbox 500   # prueba (sub-caja no periódica)
+#   sbatch jobs/run_cubic_iteration.sbatch --subbox 500   # test (nonperiodic subbox)
 #SBATCH --job-name=astra_cpp_cubic
 #SBATCH --account=desi
 #SBATCH --qos=debug

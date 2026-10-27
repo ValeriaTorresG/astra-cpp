@@ -1,4 +1,4 @@
-// Utilidades para cajas cúbicas periódicas.
+// utilities for periodic cubic boxes.
 #pragma once
 
 #include <array>
@@ -7,7 +7,7 @@
 
 namespace astra {
 
-// Lleva cada punto (xyz de tamaño 3n) a [lo, hi) por periodicidad.
+// wrap each point (xyz of size 3n) into [lo, hi) periodically.
 void wrap_periodic(double* xyz, Index n, const std::array<double, 3>& lo, const std::array<double, 3>& hi,
                    int threads);
 

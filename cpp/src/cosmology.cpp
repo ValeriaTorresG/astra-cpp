@@ -12,7 +12,7 @@
 namespace astra {
 namespace {
 
-// Constantes CODATA 2018 / IAU 2015 (las mismas de astropy.constants).
+// codata 2018 / iau 2015 constants (the same as astropy.constants).
 constexpr double kC = 299792458.0;               // m / s
 constexpr double kG = 6.67430e-11;               // m^3 / (kg s^2)
 constexpr double kSigmaSB = 5.670374419e-8;      // W / (m^2 K^4)
@@ -21,7 +21,7 @@ constexpr double kMpc = 3.0856775814913673e22;   // m
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = kPi / 180.0;
 
-// Gauss-Legendre de 8 nodos en [-1, 1].
+// 8-node gauss-legendre on [-1, 1].
 constexpr double kGLx[4] = {0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363};
 constexpr double kGLw[4] = {0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763};
 
@@ -37,7 +37,7 @@ double gauss_legendre(F&& f, double a, double b) {
 
 FlatLambdaCDM::FlatLambdaCDM(double H0, double Om0, double Tcmb0, double Neff, std::vector<double> m_nu)
     : H0_(H0), Om0_(Om0), Tcmb0_(Tcmb0), Neff_(Neff) {
-    // Igual que astropy.cosmology.FLRW: densidad de fotones y neutrinos.
+    // as in astropy.cosmology.flrw: photon and neutrino density.
     const double h0_si = H0 * 1e3 / kMpc;
     const double rho_crit = 3.0 * h0_si * h0_si / (8.0 * kPi * kG);
     const double a_rad = 4.0 * kSigmaSB / (kC * kC * kC);
@@ -58,7 +58,7 @@ FlatLambdaCDM FlatLambdaCDM::planck18() {
 double FlatLambdaCDM::hubble_distance() const { return kC * 1e-3 / H0_; }
 
 double FlatLambdaCDM::nu_relative_density(double z) const {
-    // Ajuste de Komatsu et al. (2011), como en astropy.
+    // komatsu et al. (2011) fit, as in astropy.
     constexpr double prefac = 0.22710731766;  // 7/8 (4/11)^(4/3)
     if (nu_y_.empty()) return prefac * Neff_;
     constexpr double p = 1.83, invp = 0.54644808743, k = 0.3173;
@@ -84,7 +84,7 @@ double FlatLambdaCDM::comoving_distance(double z) const {
 }
 
 ComovingDistanceTable::ComovingDistanceTable(const FlatLambdaCDM& cosmo, double zmax, double dz) : dz_(dz) {
-    if (!(zmax > 0) || !(dz > 0)) throw std::invalid_argument("zmax y dz deben ser positivos");
+    if (!(zmax > 0) || !(dz > 0)) throw std::invalid_argument("zmax and dz must be positive");
     const std::size_t n = std::size_t(std::ceil(zmax / dz)) + 1;
     zmax_ = dz * double(n - 1);
     dist_.resize(n);
@@ -99,7 +99,7 @@ ComovingDistanceTable::ComovingDistanceTable(const FlatLambdaCDM& cosmo, double 
 }
 
 double ComovingDistanceTable::operator()(double z) const {
-    if (!(z >= 0.0 && z <= zmax_)) throw std::out_of_range("z fuera de la tabla de distancias");
+    if (!(z >= 0.0 && z <= zmax_)) throw std::out_of_range("z is outside the distance table");
     const double u = z / dz_;
     const std::size_t i = std::min(std::size_t(u), dist_.size() - 2);
     const double t = u - double(i), t2 = t * t, t3 = t2 * t;
@@ -117,7 +117,7 @@ void sky_to_cartesian(const double* ra_deg, const double* dec_deg, const double*
         if (!std::isfinite(ra_deg[i]) || !std::isfinite(dec_deg[i]) || !std::isfinite(z[i]) || z[i] <= 0) ++bad;
         else zmax = std::max(zmax, z[i]);
     }
-    if (bad) throw std::runtime_error(std::to_string(bad) + " filas con RA/DEC no finitos o z <= 0");
+    if (bad) throw std::runtime_error(std::to_string(bad) + " rows have nonfinite RA/DEC or z <= 0");
     if (n == 0) return;
     const ComovingDistanceTable table(cosmo, zmax * 1.001 + 1e-3);
 #pragma omp parallel for num_threads(nt) schedule(static)

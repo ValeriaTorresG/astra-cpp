@@ -18,9 +18,9 @@
 namespace astra {
 namespace {
 
-constexpr std::size_t kBlock = 2880;  // unidad de registro FITS
+constexpr std::size_t kBlock = 2880;  // fits record unit
 constexpr std::size_t kCard = 80;
-constexpr std::size_t kMaxGap = std::size_t(64) << 10;  // bytes entre filas pedidas para leer el tramo entero
+constexpr std::size_t kMaxGap = std::size_t(64) << 10;  // maximum gap between requested rows for reading the full span
 
 std::string upper(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -33,7 +33,7 @@ std::string trim(const std::string& s) {
     return s.substr(b, s.find_last_not_of(' ') - b + 1);
 }
 
-// Valor de una tarjeta "KEY     = value / comment"; las cadenas van sin comillas.
+// value of a "key     = value / comment" card; strings have no quotes.
 std::string card_value(const std::string& card) {
     std::string v = card.substr(10);
     if (const auto q = v.find('\''); q != std::string::npos) {
@@ -46,7 +46,7 @@ std::string card_value(const std::string& card) {
 class File {
 public:
     explicit File(const std::string& path) : fd_(::open(path.c_str(), O_RDONLY)) {
-        if (fd_ < 0) throw std::runtime_error("No se puede abrir " + path + ": " + std::strerror(errno));
+        if (fd_ < 0) throw std::runtime_error("cannot open " + path + ": " + std::strerror(errno));
     }
     ~File() { if (fd_ >= 0) ::close(fd_); }
     File(const File&) = delete;
@@ -57,9 +57,9 @@ public:
             const ssize_t got = ::pread(fd_, buf, nbytes, static_cast<off_t>(offset));
             if (got < 0) {
                 if (errno == EINTR) continue;
-                throw std::runtime_error(std::string("Error de lectura: ") + std::strerror(errno));
+                throw std::runtime_error(std::string("read error: ") + std::strerror(errno));
             }
-            if (got == 0) throw std::runtime_error("Fin de archivo inesperado");
+            if (got == 0) throw std::runtime_error("unexpected end of file");
             buf += got;
             offset += static_cast<std::size_t>(got);
             nbytes -= static_cast<std::size_t>(got);
@@ -70,8 +70,8 @@ private:
     int fd_;
 };
 
-// Lee las tarjetas de un header que empieza en `offset`; devuelve el offset de
-// los datos (alineado a 2880) y llena `keys`.
+// read the cards in a header starting at `offset`; return the data offset
+// (aligned to 2880) and populate `keys`.
 std::size_t read_header(const File& f, std::size_t offset, std::map<std::string, std::string>& keys) {
     std::vector<char> block(kBlock);
     for (;;) {
@@ -90,7 +90,7 @@ long key_long(const std::map<std::string, std::string>& keys, const std::string&
     const auto it = keys.find(k);
     if (it == keys.end()) {
         if (def >= 0) return def;
-        throw std::runtime_error("Falta la palabra clave FITS " + k);
+        throw std::runtime_error("missing FITS keyword " + k);
     }
     return std::stol(it->second);
 }
@@ -103,11 +103,11 @@ std::size_t type_width(char t, long repeat) {
         case 'J': case 'E': return 4 * std::size_t(repeat);
         case 'K': case 'D': case 'C': case 'P': return 8 * std::size_t(repeat);
         case 'M': case 'Q': return 16 * std::size_t(repeat);
-        default: throw std::runtime_error(std::string("TFORM no soportado: ") + t);
+        default: throw std::runtime_error(std::string("unsupported TFORM: ") + t);
     }
 }
 
-// Valor big-endian escalar -> double.
+// scalar big-endian value -> double.
 inline double decode(const char* p, char type) {
     switch (type) {
         case 'B': return static_cast<double>(static_cast<std::uint8_t>(*p));
@@ -125,8 +125,8 @@ inline double decode(const char* p, char type) {
     }
 }
 
-// Unidad de trabajo: filas sel[begin, end) de una petición, todas dentro de un
-// tramo de ~block_bytes del archivo.
+// work unit: selected rows [begin, end) of one request, all within a
+// ~block_bytes span of the file.
 struct Task {
     std::size_t request;
     Index begin, end;
@@ -144,7 +144,7 @@ FitsTable::FitsTable(std::string path, int hdu) : path_(std::move(path)) {
         keys.clear();
         const std::size_t data = read_header(f, offset, keys);
         if (h == hdu) { data_offset_ = data; break; }
-        // Saltar los datos de esta HDU: |BITPIX|/8 * GCOUNT * (PCOUNT + prod(NAXISi))
+        // skip this hdu's data: |bitpix|/8 * gcount * (pcount + prod(naxisi))
         const long naxis = key_long(keys, "NAXIS");
         std::size_t size = 0;
         if (naxis > 0) {
@@ -156,7 +156,7 @@ FitsTable::FitsTable(std::string path, int hdu) : path_(std::move(path)) {
         offset = data + (size + kBlock - 1) / kBlock * kBlock;
     }
     if (keys["XTENSION"] != "BINTABLE")
-        throw std::runtime_error(path_ + ": la HDU " + std::to_string(hdu) + " no es BINTABLE");
+        throw std::runtime_error(path_ + ": HDU " + std::to_string(hdu) + " is not BINTABLE");
     row_bytes_ = std::size_t(key_long(keys, "NAXIS1"));
     nrows_ = key_long(keys, "NAXIS2");
     const long nfields = key_long(keys, "TFIELDS");
@@ -176,7 +176,7 @@ FitsTable::FitsTable(std::string path, int hdu) : path_(std::move(path)) {
         columns_.push_back(std::move(c));
     }
     if (col_offset != row_bytes_)
-        throw std::runtime_error(path_ + ": la suma de TFORM no coincide con NAXIS1");
+        throw std::runtime_error(path_ + ": TFORM widths do not sum to NAXIS1");
 }
 
 bool FitsTable::has_column(const std::string& name) const {
@@ -188,14 +188,14 @@ const FitsColumn& FitsTable::column(const std::string& name) const {
     const std::string u = upper(name);
     for (const auto& c : columns_)
         if (upper(c.name) == u) return c;
-    throw std::runtime_error(path_ + ": no existe la columna " + name);
+    throw std::runtime_error(path_ + ": column does not exist: " + name);
 }
 
 void read_columns(const std::vector<FitsReadRequest>& requests, const std::vector<std::string>& names,
                   const std::vector<OutputColumn>& outputs, int threads, std::size_t block_bytes) {
-    if (names.size() != outputs.size()) throw std::invalid_argument("names y outputs deben tener el mismo tamaño");
+    if (names.size() != outputs.size()) throw std::invalid_argument("names and outputs must have the same size");
 
-    // Columnas resueltas por petición y validación.
+    // columns resolved for each request and validated.
     std::vector<std::vector<const FitsColumn*>> cols(requests.size());
     for (std::size_t r = 0; r < requests.size(); ++r) {
         const auto& req = requests[r];
@@ -203,20 +203,20 @@ void read_columns(const std::vector<FitsReadRequest>& requests, const std::vecto
         for (const auto& n : names) {
             const FitsColumn& c = t.column(n);
             if (c.repeat != 1 || std::strchr("BIJKED", c.type) == nullptr)
-                throw std::runtime_error(t.path() + ": la columna " + n + " no es numérica escalar");
+                throw std::runtime_error(t.path() + ": column " + n + " is not a numeric scalar");
             cols[r].push_back(&c);
         }
         const Index count = req.all_rows ? t.nrows() : req.n_rows;
         if (req.all_rows && req.n_rows > 0 && req.n_rows != t.nrows())
-            throw std::invalid_argument("all_rows con n_rows distinto de nrows");
+            throw std::invalid_argument("all_rows requires n_rows equal to nrows");
         for (Index k = 1; !req.all_rows && k < count; ++k)
-            if (req.rows[k] <= req.rows[k - 1]) throw std::invalid_argument("las filas deben ser crecientes y únicas");
+            if (req.rows[k] <= req.rows[k - 1]) throw std::invalid_argument("rows must be sorted and unique");
         if (count > 0 && (row_at(req, 0) < 0 || row_at(req, count - 1) >= t.nrows()))
-            throw std::out_of_range(t.path() + ": fila fuera de rango");
+            throw std::out_of_range(t.path() + ": row out of range");
     }
 
-    // Partición en tareas: filas consecutivas de la selección cuyo tramo de
-    // archivo no supera block_bytes.
+    // split into tasks: consecutive selected rows whose file span
+    // does not exceed block_bytes.
     std::vector<Task> tasks;
     for (std::size_t r = 0; r < requests.size(); ++r) {
         const auto& req = requests[r];
@@ -224,7 +224,7 @@ void read_columns(const std::vector<FitsReadRequest>& requests, const std::vecto
         const Index rows_per_block = std::max<Index>(1, Index(block_bytes / req.table->row_bytes()));
         Index b = 0;
         while (b < count) {
-            const Index limit = row_at(req, b) + rows_per_block;  // primera fila fuera del bloque
+            const Index limit = row_at(req, b) + rows_per_block;  // first row beyond the block
             Index e;
             if (req.all_rows) e = std::min(count, limit);
             else e = Index(std::lower_bound(req.rows + b, req.rows + count, limit) - req.rows);
@@ -258,9 +258,9 @@ void read_columns(const std::vector<FitsReadRequest>& requests, const std::vecto
                     for (std::size_t c = 0; c < tc.size(); ++c)
                         outputs[c].data[o * outputs[c].stride] = decode(row + tc[c]->offset, tc[c]->type);
                 };
-                // Selección densa (hueco medio entre filas <= kMaxGap): un pread del
-                // tramo completo, porque casi todas las páginas tienen alguna fila
-                // pedida. Dispersa: un pread por fila.
+                // dense selection (mean gap between rows <= kMaxGap): one pread
+                // for the full span, since nearly every page contains a requested
+                // row. sparse selection: one pread per row.
                 if (span <= std::size_t(nsel) * kMaxGap) {
                     buf.resize(span);
                     files[task.request]->read_at(buf.data(), span, t.data_offset() + std::size_t(first) * rb);

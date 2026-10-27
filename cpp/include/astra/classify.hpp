@@ -1,4 +1,4 @@
-// Estadístico r de ASTRA, clasificación en WEBTYPE y agregación entre iteraciones.
+// astra r statistic, webtype classification, and aggregation across iterations.
 #pragma once
 
 #include <cstddef>
@@ -12,13 +12,13 @@ struct RThresholds {
     float upper = 0.65f;
 };
 
-// r = (NDATA - NRAND) / (NDATA + NRAND) en float32 (0 si no hay vecinos) y
+// r = (ndata - nrand) / (ndata + nrand) in float32 (0 if there are no neighbors) and
 //   void: r < lower | sheet: [lower, med) | filament: [med, upper) | knot: r >= upper,
-// operación por operación igual que implement_astra._compute_probability_components.
+// operation by operation as in implement_astra._compute_probability_components.
 void classify(const std::int32_t* ndata, const std::int32_t* nrand, std::size_t n,
               const RThresholds& thresholds, float* r, std::uint8_t* webtype, int threads);
 
-// counts[4*i + webtype[i]] += 1 (conteo de clases por objeto entre iteraciones).
+// counts[4*i + webtype[i]] += 1 (class count per object across iterations).
 void accumulate_webtypes(const std::uint8_t* webtype, std::size_t n, std::uint16_t* counts,
                          int threads);
 
