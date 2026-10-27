@@ -1,0 +1,217 @@
+"""Construcción del catálogo data + randoms de una iteración.
+
+Toda la E/S de FITS, el muestreo del pool de randoms y el paso a coordenadas
+cartesianas se hacen en C++ (`_core`); aquí solo se arman los arrays.
+"""
+from __future__ import annotations
+
+import glob
+import logging
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from . import _core
+from .config import GHOST_SPACINGS, RANDOM_ID_FACTOR, CubicConfig, CutskyConfig
+from .monitor import ResourceMonitor, gib
+
+
+# Columnas de posición de las cajas de AbacusSummit (Mpc/h)
+CUBIC_COLUMNS = ('x', 'y', 'z')
+
+
+@dataclass
+class PeriodicBox:
+    lo: list[float]
+    hi: list[float]
+    ghost_margin: float
+
+
+@dataclass
+class Catalog:
+    """Puntos de una iteración. Las primeras `n_data` filas son siempre la muestra real."""
+    targetid: np.ndarray                 # int64; reales > 0, randoms < 0
+    is_data: np.ndarray                  # bool
+    xyz: np.ndarray | None               # (N, 3) float64, se libera tras triangular
+    n_data: int
+    columns: dict[str, np.ndarray] = field(default_factory=dict)  # columnas extra para guardar
+    meta: dict = field(default_factory=dict)
+    box: PeriodicBox | None = None       # caja periódica (solo cajas cúbicas completas)
+
+    @property
+    def size(self) -> int:
+        return len(self.targetid)
+
+
+@dataclass
+class RandomSource:
+    seed: int
+    table: _core.FitsTable
+
+    @property
+    def path(self) -> str:
+        return self.table.path
+
+    @property
+    def nrows(self) -> int:
+        return self.table.nrows
+
+
+def seed_of(path: Path) -> int:
+    match = re.fullmatch(r'random_S(\d+)_\d+X\.fits', path.name)
+    if not match:
+        raise ValueError(f'No se puede extraer la semilla de {path.name}')
+    return int(match.group(1))
+
+
+def discover_randoms(pattern: str, required: list[str]) -> list[RandomSource]:
+    paths = sorted((Path(p) for p in glob.glob(pattern)), key=seed_of)
+    if not paths:
+        raise FileNotFoundError(f'Ningún archivo coincide con {pattern}')
+    sources = []
+    for path in paths:
+        table = _core.FitsTable(str(path))
+        missing = [c for c in required if not table.has_column(c)]
+        if missing:
+            raise ValueError(f'{path.name} no tiene las columnas {missing}')
+        if table.nrows >= RANDOM_ID_FACTOR:
+            raise ValueError(f'{path.name} tiene demasiadas filas para TARGETID estables')
+        sources.append(RandomSource(seed_of(path), table))
+    return sources
+
+
+def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) -> Catalog:
+    """Muestra real completa + un pool de randoms del mismo tamaño, muestreado
+    sin reemplazo y de forma uniforme sobre la unión de todos los archivos semilla."""
+    columns = ['RA', 'DEC', cfg.redshift]
+    real = _core.FitsTable(str(cfg.real_file))
+    missing = [c for c in columns if not real.has_column(c)]
+    if missing:
+        raise ValueError(f'{cfg.real_file.name} no tiene las columnas {missing}')
+    n_real = min(real.nrows, cfg.max_real_rows) if cfg.max_real_rows else real.nrows
+    sources = discover_randoms(cfg.random_glob, columns)
+    pool_size = sum(s.nrows for s in sources)
+    log.info('real: %s filas (se usan %s) | %s', real.nrows, n_real, cfg.real_file)
+    log.info('pool de randoms: %s archivos, %s filas (%.1fx la muestra real)',
+             len(sources), pool_size, pool_size / n_real)
+
+    with mon.stage('pool_randoms'):
+        rows = _core.sample_pool([s.nrows for s in sources], n_real, cfg.seed)
+    for source, r in zip(sources, rows):
+        log.info('  random seed=%s sorteadas=%s/%s', source.seed, len(r), source.nrows)
+
+    n = 2 * n_real
+    ra, dec, z = (np.empty(n, dtype=np.float64) for _ in range(3))
+    requests = [(real, None if n_real == real.nrows else np.arange(n_real, dtype=np.int64), 0)]
+    offset = n_real
+    for source, r in zip(sources, rows):
+        requests.append((source.table, r, offset))
+        offset += len(r)
+    with mon.stage('lectura_fits'):
+        _core.read_columns(requests, columns, [ra, dec, z], threads=cfg.threads)
+
+    targetid = np.empty(n, dtype=np.int64)
+    targetid[:n_real] = np.arange(1, n_real + 1, dtype=np.int64)
+    offset = n_real
+    for source, r in zip(sources, rows):
+        targetid[offset:offset + len(r)] = -(source.seed * RANDOM_ID_FACTOR + r + 1)
+        offset += len(r)
+    is_data = np.zeros(n, dtype=bool)
+    is_data[:n_real] = True
+
+    with mon.stage('coordenadas'):
+        xyz = _core.sky_to_cartesian(ra, dec, z, _core.FlatLambdaCDM.planck18(), threads=cfg.threads)
+
+    meta = {'catalog': 'cutsky', 'n_real': n_real, 'n_random': n_real, 'pool_rows': pool_size,
+            'random_sources': [{'seed': s.seed, 'path': s.path, 'rows': s.nrows, 'sampled': len(r)}
+                               for s, r in zip(sources, rows)],
+            'cosmology': 'Planck18 (FlatLambdaCDM, astropy)', 'distance_unit': 'Mpc'}
+    return Catalog(targetid, is_data, xyz, n_real, {'RA': ra, 'DEC': dec, 'Z': z}, meta)
+
+
+def _box_bounds(xyz_data: np.ndarray, box_size: float) -> tuple[np.ndarray, np.ndarray]:
+    """Caja [lo, lo + L)^3 de AbacusSummit: centrada en 0 o con esquina en 0."""
+    lo_data, hi_data = float(xyz_data.min()), float(xyz_data.max())
+    origin = 0.0 if lo_data >= 0 else -box_size / 2
+    lo, hi = np.full(3, origin), np.full(3, origin + box_size)
+    tol = 1e-6 * box_size
+    if lo_data < origin - tol or hi_data > origin + box_size + tol:
+        raise ValueError(f'Galaxias en [{lo_data}, {hi_data}], fuera de la caja '
+                         f'[{origin}, {origin + box_size}]; revisa --box-size')
+    return lo, hi
+
+
+def _target_ids(n_data: int, n_random: int, data_ids: np.ndarray | None = None) -> np.ndarray:
+    """Reales: fila del archivo + 1. Randoms: -(1..n_random). Sin temporales grandes."""
+    targetid = np.arange(1, n_data + n_random + 1, dtype=np.int64)
+    if data_ids is not None:
+        targetid[:n_data] = data_ids
+    rand = targetid[n_data:]
+    rand -= n_data
+    np.negative(rand, out=rand)
+    return targetid
+
+
+def load_cubic(cfg: CubicConfig, log: logging.Logger, mon: ResourceMonitor) -> Catalog:
+    """Caja cúbica de AbacusSummit + randoms uniformes en la caja.
+
+    Caja completa (periódica): x, y, z se leen directo en las columnas del
+    arreglo final de posiciones, se envuelven a [lo, hi) y los randoms se
+    generan en sitio a continuación, sin copias intermedias. Con --subbox se
+    toma una sub-caja (no periódica) para pruebas.
+    """
+    table = _core.FitsTable(str(cfg.box_file))
+    missing = [c for c in CUBIC_COLUMNS if not table.has_column(c)]
+    if missing:
+        raise ValueError(f'{cfg.box_file.name} no tiene las columnas {missing}')
+    n_all = table.nrows
+
+    if cfg.subbox:
+        everything = np.empty((n_all, 3), dtype=np.float64)
+        with mon.stage('lectura_fits'):
+            _core.read_columns([(table, None, 0)], list(CUBIC_COLUMNS),
+                               [everything[:, k] for k in range(3)], threads=cfg.threads)
+        lo, hi = _box_bounds(everything, cfg.box_size)
+        hi = lo + cfg.subbox
+        index = np.flatnonzero(np.all((everything >= lo) & (everything < hi), axis=1))
+        n_data = len(index)
+        n_random = int(round(cfg.random_factor * n_data))
+        xyz = np.empty((n_data + n_random, 3), dtype=np.float64)
+        xyz[:n_data] = everything[index]
+        del everything
+        data_ids, periodic = index + 1, False
+    else:
+        n_data = n_all
+        n_random = int(round(cfg.random_factor * n_data))
+        xyz = np.empty((n_data + n_random, 3), dtype=np.float64)
+        log.info('posiciones: (%s, 3) float64 = %.1f GiB', len(xyz), xyz.nbytes / 2**30)
+        with mon.stage('lectura_fits'):
+            _core.read_columns([(table, None, 0)], list(CUBIC_COLUMNS),
+                               [xyz[:, k] for k in range(3)], threads=cfg.threads)
+        lo, hi = _box_bounds(xyz[:n_data], cfg.box_size)
+        data_ids, periodic = None, cfg.periodic
+        if periodic:
+            _core.wrap_periodic(xyz[:n_data], lo.tolist(), hi.tolist(), threads=cfg.threads)
+
+    log.info('caja: %s galaxias (de %s) en [%s, %s)^3 | randoms uniformes: %s | periódica: %s',
+             n_data, n_all, lo[0], hi[0], n_random, periodic)
+    with mon.stage('randoms_caja'):
+        _core.fill_uniform_box(xyz[n_data:], lo.tolist(), hi.tolist(), cfg.seed, threads=cfg.threads)
+
+    targetid = _target_ids(n_data, n_random, data_ids)
+    is_data = np.zeros(n_data + n_random, dtype=bool)
+    is_data[:n_data] = True
+
+    box = None
+    meta = {'catalog': 'cubic', 'n_real': n_data, 'n_random': n_random, 'box_rows': n_all,
+            'box_lo': lo.tolist(), 'box_hi': hi.tolist(), 'periodic': periodic, 'distance_unit': 'Mpc/h'}
+    if periodic:
+        spacing = (np.prod(hi - lo) / len(xyz)) ** (1 / 3)
+        margin = cfg.ghost_margin if cfg.ghost_margin > 0 else GHOST_SPACINGS * spacing
+        box = PeriodicBox(lo.tolist(), hi.tolist(), float(margin))
+        meta.update(ghost_margin=float(margin), mean_spacing=float(spacing))
+        log.info('periodicidad: margen de fantasmas %.2f (%.1f separaciones medias de %.3f)',
+                 margin, margin / spacing, spacing)
+    return Catalog(targetid, is_data, xyz, n_data, {}, meta, box)
