@@ -7,3 +7,5 @@ plots/r_distribution_cache/
 plots/delta_z_cache/
 plots/nz_cache/
 plots/sky_slice_cache/
+plots/cubic_box_3d_cache/
+plots/cutsky_wedge_cache/
