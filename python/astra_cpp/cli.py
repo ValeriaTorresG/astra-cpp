@@ -46,6 +46,10 @@ def main(argv=None) -> int:
     p.add_argument('--random-glob', default=DEFAULT_CUTSKY_RANDOM_GLOB)
     p.add_argument('--redshift', choices=('Z', 'Z_COSMO'), default='Z')
     p.add_argument('--max-real-rows', type=int, default=None, help='first n real rows (tests)')
+    p.add_argument('--footprint', default='IN_Y5',
+                   help='keep only real and random rows where this column is nonzero (default: IN_Y5)')
+    p.add_argument('--no-footprint', dest='footprint', action='store_const', const=None,
+                   help='use the full catalogs, without a footprint cut')
 
     p = sub.add_parser('cubic', help='one iteration on a cubic box + uniform randoms')
     _common(p)
@@ -77,7 +81,7 @@ def main(argv=None) -> int:
 
     from .pipeline import run_cubic, run_cutsky
     if args.command == 'cutsky':
-        cfg = CutskyConfig(**_params(args, COMMON + ('real_file', 'random_glob', 'redshift', 'max_real_rows')))
+        cfg = CutskyConfig(**_params(args, COMMON + ('real_file', 'random_glob', 'redshift', 'max_real_rows', 'footprint')))
         run_cutsky(cfg)
     else:
         cfg = CubicConfig(**_params(args, COMMON + ('box_file', 'box_size', 'random_factor', 'periodic', 'ghost_margin', 'subbox')))

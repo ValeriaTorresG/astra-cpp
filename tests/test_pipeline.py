@@ -21,7 +21,8 @@ from test_core import numpy_classify, periodic_reference_counts, scipy_counts  #
 def sky_columns(rng, n):
     return {'RA': rng.uniform(150, 200, n), 'DEC': rng.uniform(0, 30, n),
             'Z': rng.uniform(0.05, 0.3, n).astype(np.float32),
-            'Z_COSMO': rng.uniform(0.05, 0.3, n).astype(np.float32)}
+            'Z_COSMO': rng.uniform(0.05, 0.3, n).astype(np.float32),
+            'IN_Y5': (rng.random(n) < 0.6).astype(np.int32)}
 
 
 class TestCutskyPipeline(unittest.TestCase):
@@ -30,11 +31,16 @@ class TestCutskyPipeline(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
         rng = np.random.default_rng(11)
-        cls.n_real = 3000
-        write_bintable(root / 'real.fits', sky_columns(rng, cls.n_real))
-        cls.random_sizes = {100: 2500, 200: 4000}
+        real = sky_columns(rng, 5000)
+        write_bintable(root / 'real.fits', real)
+        cls.real_rows = np.flatnonzero(real['IN_Y5'])  # default footprint
+        cls.n_real = len(cls.real_rows)
+        cls.random_sizes = {100: 4000, 200: 6000}
+        cls.random_in = {}
         for seed, n in cls.random_sizes.items():
-            write_bintable(root / f'random_S{seed}_1X.fits', sky_columns(rng, n))
+            cols = sky_columns(rng, n)
+            cls.random_in[seed] = cols['IN_Y5'].astype(bool)
+            write_bintable(root / f'random_S{seed}_1X.fits', cols)
         cls.cfg = dict(real_file=root / 'real.fits', random_glob=str(root / 'random_S*_1X.fits'),
                        output_dir=root / 'out', threads=2, log_interval=3600)
 
@@ -53,13 +59,16 @@ class TestCutskyPipeline(unittest.TestCase):
         self.assertEqual(cls.dtype, CLASS_DTYPE)
         self.assertEqual(len(cls), n)
         self.assertTrue(cls['ISDATA'][:self.n_real].all() and not cls['ISDATA'][self.n_real:].any())
-        np.testing.assert_array_equal(cls['TARGETID'][:self.n_real], np.arange(1, self.n_real + 1))
+        # real targetid = one-based file row, only rows inside the footprint
+        np.testing.assert_array_equal(cls['TARGETID'][:self.n_real], self.real_rows + 1)
 
         # randoms: targetid encodes (seed, row), and positions come from the correct file
         rid = -cls['TARGETID'][self.n_real:]
         seeds, rows = (rid - 1) // RANDOM_ID_FACTOR, (rid - 1) % RANDOM_ID_FACTOR
         self.assertEqual(set(np.unique(seeds)), set(self.random_sizes))
         self.assertEqual(len(np.unique(rid)), self.n_real)
+        for seed, inside in self.random_in.items():
+            self.assertTrue(inside[rows[seeds == seed]].all())
         table = _core.FitsTable(str(Path(self.cfg['random_glob']).with_name('random_S200_1X.fits')))
         sel = seeds == 200
         ra = np.empty(sel.sum())
@@ -83,6 +92,19 @@ class TestCutskyPipeline(unittest.TestCase):
         expected = (np.eye(4)[webtype[:self.n_real]] + np.eye(4)[c1]) / 2
         got = np.column_stack([prob[f] for f in ('PVOID', 'PSHEET', 'PFILAMENT', 'PKNOT')])
         np.testing.assert_allclose(got, expected)
+
+    def test_without_footprint(self):
+        cfg = CutskyConfig(iteration=2, footprint=None, max_real_rows=3000, **self.cfg)
+        self.assertNotEqual(cfg.run_dir, CutskyConfig(**self.cfg).run_dir)
+        summary = run_cutsky(cfg)
+        self.assertIsNone(summary['footprint'])
+        self.assertEqual(summary['pool_rows'], sum(self.random_sizes.values()))
+        cls = np.load(RunPaths(cfg.run_dir).classification(2))
+        np.testing.assert_array_equal(cls['TARGETID'][:3000], np.arange(1, 3001))
+
+    def test_missing_footprint_column(self):
+        with self.assertRaises(ValueError):
+            run_cutsky(CutskyConfig(iteration=3, footprint='IN_Y1', aggregate=False, **self.cfg))
 
     def test_skips_completed_iteration(self):
         run_cutsky(CutskyConfig(iteration=5, **self.cfg))

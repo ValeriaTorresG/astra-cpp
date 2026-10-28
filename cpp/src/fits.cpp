@@ -282,4 +282,58 @@ void read_columns(const std::vector<FitsReadRequest>& requests, const std::vecto
     if (!error.empty()) throw std::runtime_error(error);
 }
 
+std::vector<std::vector<Index>> select_rows(const std::vector<const FitsTable*>& tables, const std::string& name,
+                                            int threads, std::size_t block_bytes) {
+    std::vector<const FitsColumn*> cols;
+    std::vector<Task> tasks;  // here `request` is the table index
+    for (std::size_t t = 0; t < tables.size(); ++t) {
+        const FitsColumn& c = tables[t]->column(name);
+        if (c.repeat != 1 || std::strchr("LBIJK", c.type) == nullptr)
+            throw std::runtime_error(tables[t]->path() + ": column " + name + " is not an integer or logical scalar");
+        cols.push_back(&c);
+        const Index n = tables[t]->nrows();
+        const Index rows_per_block = std::max<Index>(1, Index(block_bytes / tables[t]->row_bytes()));
+        for (Index b = 0; b < n; b += rows_per_block) tasks.push_back({t, b, std::min(n, b + rows_per_block)});
+    }
+
+    std::vector<std::unique_ptr<File>> files;
+    files.reserve(tables.size());
+    for (const auto* t : tables) files.push_back(std::make_unique<File>(t->path()));
+
+    std::vector<std::vector<Index>> found(tasks.size());
+    std::string error;
+#pragma omp parallel num_threads(resolve_threads(threads))
+    {
+        std::vector<char> buf;
+#pragma omp for schedule(dynamic, 1)
+        for (std::size_t ti = 0; ti < tasks.size(); ++ti) {
+            try {
+                const Task& task = tasks[ti];
+                const FitsTable& t = *tables[task.request];
+                const FitsColumn& c = *cols[task.request];
+                const std::size_t rb = t.row_bytes();
+                buf.resize(std::size_t(task.end - task.begin) * rb);
+                files[task.request]->read_at(buf.data(), buf.size(), t.data_offset() + std::size_t(task.begin) * rb);
+                for (Index k = task.begin; k < task.end; ++k) {
+                    const char* p = buf.data() + std::size_t(k - task.begin) * rb + c.offset;
+                    if (c.type == 'L' ? *p == 'T' : decode(p, c.type) != 0.0) found[ti].push_back(k);
+                }
+            } catch (const std::exception& e) {
+#pragma omp critical
+                if (error.empty()) error = e.what();
+            }
+        }
+    }
+    if (!error.empty()) throw std::runtime_error(error);
+
+    // tasks are in (table, row) order: concatenate them per table.
+    std::vector<std::vector<Index>> out(tables.size());
+    for (std::size_t ti = 0; ti < tasks.size(); ++ti) {
+        auto& rows = out[tasks[ti].request];
+        rows.insert(rows.end(), found[ti].begin(), found[ti].end());
+        std::vector<Index>().swap(found[ti]);
+    }
+    return out;
+}
+
 }  // namespace astra

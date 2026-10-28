@@ -122,6 +122,19 @@ void py_read_columns(const py::list& requests, const std::vector<std::string>& n
     read_columns(reqs, names, outs, threads, block_mb << 20);
 }
 
+py::list py_select_rows(const py::list& tables, const std::string& name, int threads, std::size_t block_mb) {
+    std::vector<const FitsTable*> ts;
+    for (const auto& t : tables) ts.push_back(&t.cast<const FitsTable&>());
+    std::vector<std::vector<Index>> rows;
+    {
+        py::gil_scoped_release release;
+        rows = select_rows(ts, name, threads, block_mb << 20);
+    }
+    py::list out;
+    for (auto& r : rows) out.append(to_numpy(std::move(r)));
+    return out;
+}
+
 // ---------------------------------------------------------------- delaunay
 class PyDelaunay3 {
 public:
@@ -209,6 +222,9 @@ PYBIND11_MODULE(_core, m) {
           py::arg("threads") = 0, py::arg("block_mb") = 64,
           "Lee columnas numéricas de varias tablas FITS como float64.\n"
           "requests: lista de (FitsTable, rows int64 crecientes | None, out_offset).");
+    m.def("select_rows", &py_select_rows, py::arg("tables"), py::arg("name"), py::arg("threads") = 0,
+          py::arg("block_mb") = 64,
+          "Filas (int64 crecientes) de cada tabla donde la columna entera o lógica name es distinta de cero.");
 
     // cosmology
     py::class_<FlatLambdaCDM>(m, "FlatLambdaCDM")

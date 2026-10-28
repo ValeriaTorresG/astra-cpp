@@ -69,4 +69,12 @@ void read_columns(const std::vector<FitsReadRequest>& requests,
                   int threads,
                   std::size_t block_bytes = std::size_t(64) << 20);
 
+// rows (ascending) of each table where the integer or logical scalar column
+// `name` is nonzero / true, e.g. a footprint flag. (table, block) tasks are
+// distributed among `threads` threads.
+std::vector<std::vector<Index>> select_rows(const std::vector<const FitsTable*>& tables,
+                                            const std::string& name,
+                                            int threads,
+                                            std::size_t block_bytes = std::size_t(64) << 20);
+
 }  // namespace astra

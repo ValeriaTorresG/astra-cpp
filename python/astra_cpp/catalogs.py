@@ -84,28 +84,50 @@ def discover_randoms(pattern: str, required: list[str]) -> list[RandomSource]:
 
 
 def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) -> Catalog:
-    """full real sample + an equally sized random pool, sampled uniformly without
-    replacement from the union of all seed files."""
+    """real sample + an equally sized random pool, sampled uniformly without
+    replacement from the union of all seed files. with `cfg.footprint`, both the
+    real sample and the pool only contain rows where that column is nonzero."""
     columns = ['RA', 'DEC', cfg.redshift]
+    required = columns + ([cfg.footprint] if cfg.footprint else [])
     real = _core.FitsTable(str(cfg.real_file))
-    missing = [c for c in columns if not real.has_column(c)]
+    missing = [c for c in required if not real.has_column(c)]
     if missing:
         raise ValueError(f'{cfg.real_file.name} is missing columns {missing}')
-    n_real = min(real.nrows, cfg.max_real_rows) if cfg.max_real_rows else real.nrows
-    sources = discover_randoms(cfg.random_glob, columns)
-    pool_size = sum(s.nrows for s in sources)
-    log.info('real: %s filas (se usan %s) | %s', real.nrows, n_real, cfg.real_file)
-    log.info('pool de randoms: %s archivos, %s filas (%.1fx la muestra real)',
-             len(sources), pool_size, pool_size / n_real)
+    sources = discover_randoms(cfg.random_glob, required)
+
+    # rows inside the footprint (None: all rows); they keep their file row numbers
+    if cfg.footprint:
+        with mon.stage('footprint'):
+            selected = _core.select_rows([real] + [s.table for s in sources], cfg.footprint, threads=cfg.threads)
+    else:
+        selected = [None] * (1 + len(sources))
+    real_sel, random_sel = selected[0], selected[1:]
+    del selected
+    n_avail = real.nrows if real_sel is None else len(real_sel)
+    n_real = min(n_avail, cfg.max_real_rows) if cfg.max_real_rows else n_avail
+    if n_real == 0:
+        raise ValueError(f'{cfg.real_file.name} has no rows in the footprint {cfg.footprint}')
+    if real_sel is None:
+        real_rows = None if n_real == real.nrows else np.arange(n_real, dtype=np.int64)
+    else:
+        real_rows = real_sel[:n_real]
+    sizes = [s.nrows if sel is None else len(sel) for s, sel in zip(sources, random_sel)]
+    pool_size = sum(sizes)
+    log.info('footprint: %s', cfg.footprint or 'none (full catalog)')
+    log.info('real: %s rows, %s in footprint (using %s) | %s', real.nrows, n_avail, n_real, cfg.real_file)
+    log.info('random pool: %s files, %s rows in the footprint of %s (%.1fx the real sample)',
+             len(sources), pool_size, sum(s.nrows for s in sources), pool_size / n_real)
 
     with mon.stage('pool_randoms'):
-        rows = _core.sample_pool([s.nrows for s in sources], n_real, cfg.seed)
-    for source, r in zip(sources, rows):
-        log.info('  random seed=%s sorteadas=%s/%s', source.seed, len(r), source.nrows)
+        picked = _core.sample_pool(sizes, n_real, cfg.seed)
+    rows = [p if sel is None else sel[p] for p, sel in zip(picked, random_sel)]
+    del picked, random_sel
+    for source, r, size in zip(sources, rows, sizes):
+        log.info('  random seed=%s sorteadas=%s/%s', source.seed, len(r), size)
 
     n = 2 * n_real
     ra, dec, z = (np.empty(n, dtype=np.float64) for _ in range(3))
-    requests = [(real, None if n_real == real.nrows else np.arange(n_real, dtype=np.int64), 0)]
+    requests = [(real, real_rows, 0)]
     offset = n_real
     for source, r in zip(sources, rows):
         requests.append((source.table, r, offset))
@@ -113,8 +135,9 @@ def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) ->
     with mon.stage('lectura_fits'):
         _core.read_columns(requests, columns, [ra, dec, z], threads=cfg.threads)
 
+    # real targetid = one-based row in the real file
     targetid = np.empty(n, dtype=np.int64)
-    targetid[:n_real] = np.arange(1, n_real + 1, dtype=np.int64)
+    targetid[:n_real] = np.arange(1, n_real + 1, dtype=np.int64) if real_rows is None else real_rows + 1
     offset = n_real
     for source, r in zip(sources, rows):
         targetid[offset:offset + len(r)] = -(source.seed * RANDOM_ID_FACTOR + r + 1)
@@ -125,9 +148,11 @@ def load_cutsky(cfg: CutskyConfig, log: logging.Logger, mon: ResourceMonitor) ->
     with mon.stage('coordenadas'):
         xyz = _core.sky_to_cartesian(ra, dec, z, _core.FlatLambdaCDM.planck18(), threads=cfg.threads)
 
-    meta = {'catalog': 'cutsky', 'n_real': n_real, 'n_random': n_real, 'pool_rows': pool_size,
-            'random_sources': [{'seed': s.seed, 'path': s.path, 'rows': s.nrows, 'sampled': len(r)}
-                               for s, r in zip(sources, rows)],
+    meta = {'catalog': 'cutsky', 'footprint': cfg.footprint, 'real_file_rows': real.nrows,
+            'n_real': n_real, 'n_random': n_real, 'pool_rows': pool_size,
+            'random_sources': [{'seed': s.seed, 'path': s.path, 'rows': s.nrows, 'in_footprint': size,
+                                'sampled': len(r)}
+                               for s, r, size in zip(sources, rows, sizes)],
             'cosmology': 'Planck18 (FlatLambdaCDM, astropy)', 'distance_unit': 'Mpc'}
     return Catalog(targetid, is_data, xyz, n_real, {'RA': ra, 'DEC': dec, 'Z': z}, meta)
 

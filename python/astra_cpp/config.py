@@ -73,10 +73,12 @@ class CutskyConfig(AstraParams):
     random_glob: str = DEFAULT_CUTSKY_RANDOM_GLOB
     redshift: str = 'Z'                    # 'Z' (with rsd) or 'Z_COSMO'
     max_real_rows: int | None = None       # first n real rows (tests)
+    footprint: str | None = 'IN_Y5'        # keep real and random rows with this flag != 0; None: full catalog
 
     @property
     def run_dir(self) -> Path:
-        return self.output_dir / 'cutsky' / self.real_file.stem / self.redshift.lower()
+        tag = self.real_file.stem + (f'_{self.footprint.lower()}' if self.footprint else '')
+        return self.output_dir / 'cutsky' / tag / self.redshift.lower()
 
 
 @dataclass

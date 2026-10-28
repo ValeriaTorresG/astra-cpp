@@ -243,6 +243,7 @@ class TestFits(unittest.TestCase):
             'E': rng.random(n).astype(np.float32),
             'D': rng.random(n),
             'NAME': np.array([f'g{i:07d}' for i in range(n)], dtype='S8'),
+            'FLAG': rng.random(n) < 0.3,
         }
         cls.path = Path(cls.tmp.name) / 'table.fits'
         write_bintable(cls.path, cls.data)
@@ -288,6 +289,16 @@ class TestFits(unittest.TestCase):
             self.read(np.array([5, 3], dtype=np.int64), ('D',))
         with self.assertRaises(ValueError):  # float32 output: would write into a copy
             _core.read_columns([(self.table, None, 0)], ['D'], [np.empty(50_000, np.float32)])
+
+    def test_select_rows(self):
+        for name in ('FLAG', 'B', 'J'):
+            rows = _core.select_rows([self.table, self.table], name, threads=4, block_mb=1)
+            self.assertEqual(len(rows), 2)
+            for r in rows:
+                self.assertEqual(r.dtype, np.int64)
+                np.testing.assert_array_equal(r, np.flatnonzero(self.data[name]))
+        with self.assertRaises(RuntimeError):
+            _core.select_rows([self.table], 'D')
 
 
 if __name__ == '__main__':

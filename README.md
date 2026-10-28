@@ -37,6 +37,10 @@ python -m astra_cpp cubic --iteration 0 --subbox 500                            
 python -m astra_cpp aggregate /pscratch/sd/v/vtorresg/astra-cpp-runs/cutsky/<catalog>/z
 ```
 
+By default, cut-sky runs keep only the real and random rows with `IN_Y5 != 0`
+(DESI Y5 footprint); `--footprint COLUMN` picks another flag and `--no-footprint`
+uses the full catalogs.
+
 
 ## Performance (full iteration, one cpu node)
 

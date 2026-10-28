@@ -26,12 +26,17 @@ def _block(cards):
 
 
 def write_bintable(path: Path, columns: dict[str, np.ndarray]) -> None:
+    columns = dict(columns)  # logical columns are replaced by their 'T'/'F' bytes
     names = list(columns)
     n = len(columns[names[0]])
     fields, tforms = [], []
     for name in names:
         col = np.asarray(columns[name])
-        if col.dtype.kind == 'S':
+        if col.dtype.kind == 'b':
+            columns[name] = np.where(col, b'T', b'F')
+            fields.append((name, 'S1'))
+            tforms.append('L')
+        elif col.dtype.kind == 'S':
             fields.append((name, col.dtype))
             tforms.append(f'{col.dtype.itemsize}A')
         else:
