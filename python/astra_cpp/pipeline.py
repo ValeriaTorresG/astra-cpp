@@ -28,12 +28,13 @@ def _now() -> str:
 PEAK_BYTES_PER_POINT = 800
 
 
-def check_memory(cat: Catalog, periodic: dict, log: logging.Logger) -> None:
+def check_memory(cat: Catalog, periodic: dict, log: logging.Logger,
+                 bytes_per_point: float = PEAK_BYTES_PER_POINT) -> None:
     n = cat.size
     if periodic:
         side = np.subtract(periodic['box_hi'], periodic['box_lo'])
         n *= float(np.prod(1 + 2 * periodic['ghost_margin'] / side))
-    need = PEAK_BYTES_PER_POINT * n
+    need = bytes_per_point * n
     available = mem_available()
     log.info('estimated memory for triangulation: %s (available on node: %s)',
              gib(need), gib(available) if available else '?')
@@ -42,24 +43,21 @@ def check_memory(cat: Catalog, periodic: dict, log: logging.Logger) -> None:
                     'a lower --random-factor, or --subbox')
 
 
-def classify_catalog(cat: Catalog, params: AstraParams, log: logging.Logger,
-                     mon: ResourceMonitor) -> tuple[dict[str, np.ndarray], dict]:
-    """triangulate all points (data + randoms) and classify each one.
-
-    release `cat.xyz` and the triangulation as soon as they are no longer needed.
-    """
+def triangulate(cat: Catalog, params: AstraParams, log: logging.Logger, mon: ResourceMonitor,
+                bytes_per_point: float = PEAK_BYTES_PER_POINT):
+    """global delaunay of all points (data + randoms). returns (triangulation,
+    stats, periodic options); `cat.xyz` is left untouched."""
     periodic = {}
     if cat.box is not None:
         periodic = {'box_lo': cat.box.lo, 'box_hi': cat.box.hi, 'ghost_margin': cat.box.ghost_margin}
         log.info('periodic box [%s, %s)^3: ghost copies within %.2f of each face',
                  cat.box.lo[0], cat.box.hi[0], cat.box.ghost_margin)
-    check_memory(cat, periodic, log)
+    check_memory(cat, periodic, log, bytes_per_point)
     log.info('global delaunay: %s points (%s data + %s random) threads=%s',
              cat.size, cat.n_data, cat.size - cat.n_data, params.tri_threads)
     with mon.stage('triangulacion'):
         tri = _core.Delaunay3(cat.xyz, threads=params.tri_threads, lock_grid_cells=params.lock_grid_cells,
                               **periodic)
-    cat.xyz = None
     stats = {'vertices': int(tri.number_of_vertices()),
              'finite_cells': int(tri.number_of_finite_cells()),
              'parallel_triangulation': bool(tri.parallel),
@@ -71,7 +69,12 @@ def classify_catalog(cat: Catalog, params: AstraParams, log: logging.Logger,
              stats['lock_grid_cells'])
     if stats['duplicates']:
         log.warning('%s exact duplicate points: inherit their vertex counts', stats['duplicates'])
+    return tri, stats, periodic
 
+
+def neighbor_counts(tri, cat: Catalog, params: AstraParams, periodic: dict, stats: dict,
+                    log: logging.Logger, mon: ResourceMonitor) -> tuple[np.ndarray, np.ndarray]:
+    """ndata/nrand per point; in periodic boxes, verify that every star is exact."""
     with mon.stage('vecinos'):
         ndata, nrand = tri.neighbor_counts(cat.is_data, threads=params.threads)
     if periodic:
@@ -80,6 +83,18 @@ def classify_catalog(cat: Catalog, params: AstraParams, log: logging.Logger,
             raise RuntimeError(f'{tri.n_unverified} points have neighbors that depend on points outside the '
                                f'periodic layer of {periodic["ghost_margin"]:.2f}: increase --ghost-margin')
         log.info('periodic neighbors verified for all %s points', cat.size)
+    return ndata, nrand
+
+
+def classify_catalog(cat: Catalog, params: AstraParams, log: logging.Logger,
+                     mon: ResourceMonitor) -> tuple[dict[str, np.ndarray], dict]:
+    """triangulate all points (data + randoms) and classify each one.
+
+    release `cat.xyz` and the triangulation as soon as they are no longer needed.
+    """
+    tri, stats, periodic = triangulate(cat, params, log, mon)
+    cat.xyz = None
+    ndata, nrand = neighbor_counts(tri, cat, params, periodic, stats, log, mon)
     del tri
 
     with mon.stage('clasificacion'):
