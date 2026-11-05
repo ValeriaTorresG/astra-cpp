@@ -20,7 +20,11 @@
 #include "astra/cosmology.hpp"
 #include "astra/delaunay.hpp"
 #include "astra/fits.hpp"
+#include "astra/healpix.hpp"
 #include "astra/random_pool.hpp"
+#include "astra/voids.hpp"
+
+#include <algorithm>
 
 namespace py = pybind11;
 using namespace astra;
@@ -197,6 +201,149 @@ private:
     mutable Index n_unverified_ = -1;  // known after neighbor_counts
 };
 
+// ---------------------------------------------------------------- voids
+template <class T>
+py::array_t<T> copy_numpy(const std::vector<T>& v) {
+    return py::array_t<T>(py::ssize_t(v.size()), v.data());
+}
+
+const std::uint8_t* bool_ptr(const CArray<bool>& a, py::ssize_t n, const char* name) {
+    require_1d(a, n, name);
+    return reinterpret_cast<const std::uint8_t*>(a.data());
+}
+
+std::optional<Box> make_box(const std::optional<std::array<double, 3>>& lo, const std::optional<std::array<double, 3>>& hi) {
+    if (lo.has_value() != hi.has_value()) throw std::invalid_argument("box_lo and box_hi must be provided together");
+    if (!lo) return std::nullopt;
+    Box box{*lo, *hi};
+    for (int c = 0; c < 3; ++c)
+        if (!(box.hi[c] > box.lo[c])) throw std::invalid_argument("invalid box");
+    return box;
+}
+
+class PyVoidFinder {
+public:
+    PyVoidFinder(const CArray<std::int32_t>& ndata, const CArray<std::int32_t>& nrand, double r_threshold, int threads) {
+        const py::ssize_t n = ndata.size();
+        require_1d(ndata, n, "ndata");
+        require_1d(nrand, n, "nrand");
+        py::gil_scoped_release release;
+        vf_ = std::make_unique<VoidFinder>(ndata.data(), nrand.data(), n, r_threshold, threads);
+    }
+
+    std::int64_t build_adjacency(const PyDelaunay3& tri, int threads) {
+        if (tri.get().n_points() != vf_->n_points())
+            throw std::invalid_argument("the triangulation and the void finder have different points");
+        py::gil_scoped_release release;
+        const Delaunay3& dt = tri.get();
+        std::vector<std::array<Index, 2>> duplicates;
+        for (const auto& d : dt.duplicates())
+            if (d[0] < dt.n_points()) duplicates.push_back({d[0], dt.original_point(d[1])});
+        vf_->merge_duplicates(duplicates);
+        vf_->set_adjacency(dt.lower_adjacency(vf_->rank().data(), vf_->n_selected(), threads));
+        return vf_->adjacency().offsets.back();
+    }
+
+    py::tuple adjacency() const {
+        const auto& a = vf_->adjacency();
+        return py::make_tuple(copy_numpy(a.offsets), copy_numpy(a.neighbors));
+    }
+
+    void grow(int min_members) {
+        py::gil_scoped_release release;
+        vf_->grow(min_members);
+    }
+
+    py::dict apply_selection_mask(const SelectionMask& mask, const CArray<double>& xyz, const CArray<bool>& is_data,
+                                  std::optional<CArray<double>> ra, std::optional<CArray<double>> dec,
+                                  double angular_sample_step, int min_members, int threads) {
+        const py::ssize_t n = vf_->n_points();
+        if (xyz.ndim() != 2 || xyz.shape(0) != n || xyz.shape(1) != 3) throw std::invalid_argument("xyz must have shape (N, 3)");
+        const auto* d = bool_ptr(is_data, n, "is_data");
+        if (ra.has_value() != dec.has_value()) throw std::invalid_argument("ra and dec must be provided together");
+        if (ra) { require_1d(*ra, n, "ra"); require_1d(*dec, n, "dec"); }
+        const double* rp = ra ? ra->data() : nullptr;
+        const double* dp = dec ? dec->data() : nullptr;
+        MaskStats s;
+        {
+            py::gil_scoped_release release;
+            s = vf_->apply_selection_mask(mask, xyz.data(), d, rp, dp, angular_sample_step, min_members, threads);
+        }
+        py::dict out;
+        out["n_internal_edges"] = s.n_internal_edges;
+        out["n_angular_edge_crossings"] = s.n_angular_edge_crossings;
+        out["n_radial_edge_crossings"] = s.n_radial_edge_crossings;
+        out["n_invalid_angular_members"] = s.n_invalid_angular_members;
+        out["n_invalid_radial_members"] = s.n_invalid_radial_members;
+        out["n_groups_affected"] = s.n_groups_affected;
+        out["n_groups_pruned"] = s.n_groups_pruned;
+        out["n_groups_discarded"] = s.n_groups_discarded;
+        out["n_groups_seed_invalid"] = s.n_groups_seed_invalid;
+        out["n_groups_undersized"] = s.n_groups_undersized;
+        out["n_pruned_members"] = s.n_pruned_members;
+        out["n_invalid_members_pruned"] = s.n_invalid_members_pruned;
+        out["n_disconnected_members"] = s.n_disconnected_members;
+        out["n_small_component_members"] = s.n_small_component_members;
+        return out;
+    }
+
+    Index flag_box_border(const CArray<double>& xyz, std::array<double, 3> lo, std::array<double, 3> hi,
+                          double buffer, int threads) {
+        const py::ssize_t n = vf_->n_points();
+        if (xyz.ndim() != 2 || xyz.shape(0) != n || xyz.shape(1) != 3) throw std::invalid_argument("xyz must have shape (N, 3)");
+        const Box box = *make_box(lo, hi);
+        py::gil_scoped_release release;
+        return vf_->flag_box_border(xyz.data(), box, buffer, threads);
+    }
+
+    py::dict shapes(const CArray<double>& xyz, const CArray<bool>& is_data, double scale,
+                    std::optional<std::array<double, 3>> box_lo, std::optional<std::array<double, 3>> box_hi,
+                    int threads) const {
+        const py::ssize_t n = vf_->n_points();
+        if (xyz.ndim() != 2 || xyz.shape(0) != n || xyz.shape(1) != 3) throw std::invalid_argument("xyz must have shape (N, 3)");
+        const auto* d = bool_ptr(is_data, n, "is_data");
+        const auto box = make_box(box_lo, box_hi);
+        VoidShapes s;
+        {
+            py::gil_scoped_release release;
+            s = vf_->shapes(xyz.data(), d, scale, box ? &*box : nullptr, threads);
+        }
+        const auto rows = py::ssize_t(s.group_id.size());
+        py::dict out;
+        out["group_id"] = to_numpy(std::move(s.group_id));
+        out["n_members"] = to_numpy(std::move(s.n_members));
+        out["n_data"] = to_numpy(std::move(s.n_data));
+        out["n_random"] = to_numpy(std::move(s.n_random));
+        out["center"] = to_numpy(std::move(s.center), {rows, 3});
+        out["eigval"] = to_numpy(std::move(s.eigval), {rows, 3});
+        out["eigvec"] = to_numpy(std::move(s.eigvec), {rows, 3, 3});
+        out["r_eff"] = to_numpy(std::move(s.r_eff));
+        out["ellip"] = to_numpy(std::move(s.ellip));
+        out["wrap_ambiguous"] = to_numpy(std::move(s.wrap_ambiguous));
+        return out;
+    }
+
+    py::tuple membership(int threads) const {
+        const auto n = py::ssize_t(vf_->n_points());
+        py::array_t<std::int32_t> premask(n), group(n);
+        py::array_t<std::uint8_t> flags(n);
+        std::int32_t* pp = premask.mutable_data();
+        std::int32_t* gp = group.mutable_data();
+        std::uint8_t* fp = flags.mutable_data();
+        {
+            py::gil_scoped_release release;
+            vf_->membership(pp, gp, fp, threads);
+        }
+        return py::make_tuple(premask, group, flags);
+    }
+
+    VoidFinder& get() { return *vf_; }
+    const VoidFinder& get() const { return *vf_; }
+
+private:
+    std::unique_ptr<VoidFinder> vf_;
+};
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
@@ -342,6 +489,133 @@ PYBIND11_MODULE(_core, m) {
         py::gil_scoped_release release;
         accumulate_webtypes(webtype.data(), std::size_t(n), c, threads);
     }, py::arg("counts"), py::arg("webtype"), py::arg("threads") = 0);
+    // void finder
+    m.attr("BORDER_ANGULAR_MEMBER") = int(kBorderAngularMember);
+    m.attr("BORDER_RADIAL_MEMBER") = int(kBorderRadialMember);
+    m.attr("BORDER_ANGULAR_EDGE") = int(kBorderAngularEdge);
+    m.attr("BORDER_RADIAL_EDGE") = int(kBorderRadialEdge);
+    m.attr("BORDER_BOX_FACE") = int(kBorderBoxFace);
+    m.attr("MEMBER_SELECTED") = int(kMemberSelected);
+    m.attr("MEMBER_PRUNED") = int(kMemberPruned);
+    m.attr("MEMBER_BORDER") = int(kMemberBorder);
+
+    m.def("ang2pix_ring", py::vectorize([](std::int64_t nside, double theta, double phi) {
+        return healpix::ang2pix_ring(nside, theta, phi);
+    }), py::arg("nside"), py::arg("theta"), py::arg("phi"), "healpy.ang2pix (RING)");
+    m.def("radec2pix_ring", py::vectorize([](std::int64_t nside, double ra, double dec) {
+        return healpix::radec2pix_ring(nside, ra, dec);
+    }), py::arg("nside"), py::arg("ra"), py::arg("dec"), "pixel RING de (RA, DEC) en grados");
+    m.def("vec2pix_ring", py::vectorize([](std::int64_t nside, double x, double y, double z) {
+        return healpix::vec2pix_ring(nside, x, y, z);
+    }), py::arg("nside"), py::arg("x"), py::arg("y"), py::arg("z"), "healpy.vec2pix (RING)");
+    m.def("contained_volume_fraction", py::vectorize(&contained_volume_fraction), py::arg("distance"),
+          py::arg("container"), py::arg("sphere"));
+
+    py::class_<SelectionMask>(m, "SelectionMask")
+        .def_readonly("nside", &SelectionMask::nside)
+        .def_readonly("min_randoms_per_pixel", &SelectionMask::min_randoms_per_pixel)
+        .def_readonly("min_randoms_per_radial_bin", &SelectionMask::min_randoms_per_radial_bin)
+        .def_readonly("radial_bin_width", &SelectionMask::radial_bin_width)
+        .def_readonly("n_rows", &SelectionMask::n_rows)
+        .def_readonly("n_valid_angular_rows", &SelectionMask::n_valid_angular)
+        .def_readonly("n_valid_radial_rows", &SelectionMask::n_valid_radial)
+        .def_property_readonly("pixel_counts", [](const SelectionMask& s) { return copy_numpy(s.pixel_counts); })
+        .def_property_readonly("radial_edges", [](const SelectionMask& s) { return copy_numpy(s.radial_edges); })
+        .def_property_readonly("radial_counts", [](const SelectionMask& s) { return copy_numpy(s.radial_counts); })
+        .def_property_readonly("n_valid_pixels", &SelectionMask::n_valid_pixels)
+        .def_property_readonly("n_valid_radial_bins", &SelectionMask::n_valid_bins)
+        .def_property_readonly("n_nonempty_pixels", [](const SelectionMask& s) {
+            return Index(std::count_if(s.pixel_counts.begin(), s.pixel_counts.end(), [](std::int64_t c) { return c > 0; }));
+        });
+    m.def("build_selection_mask", [](const CArray<double>& ra, const CArray<double>& dec, const CArray<double>& xyz,
+                                     std::int64_t nside, int min_randoms_per_pixel, double radial_bin_width,
+                                     int min_randoms_per_radial_bin, int threads) {
+        const py::ssize_t n = ra.size();
+        require_1d(ra, n, "ra");
+        require_1d(dec, n, "dec");
+        if (xyz.ndim() != 2 || xyz.shape(0) != n || xyz.shape(1) != 3) throw std::invalid_argument("xyz must have shape (N, 3)");
+        py::gil_scoped_release release;
+        return build_selection_mask(ra.data(), dec.data(), xyz.data(), n, nside, min_randoms_per_pixel,
+                                    radial_bin_width, min_randoms_per_radial_bin, threads);
+    }, py::arg("ra"), py::arg("dec"), py::arg("xyz"), py::arg("nside") = 128, py::arg("min_randoms_per_pixel") = 3,
+       py::arg("radial_bin_width") = 5.0, py::arg("min_randoms_per_radial_bin") = 3, py::arg("threads") = 0,
+       "Máscara angular (HEALPix RING) y radial contada con los randoms de una realización");
+
+    py::class_<PyVoidFinder>(m, "VoidFinder")
+        .def(py::init<const CArray<std::int32_t>&, const CArray<std::int32_t>&, double, int>(), py::arg("ndata"),
+             py::arg("nrand"), py::arg("r_threshold") = -0.25, py::arg("threads") = 0,
+             "Selecciona r <= r_threshold y ordena por r creciente (empates por índice)")
+        .def_property_readonly("n_points", [](const PyVoidFinder& v) { return v.get().n_points(); })
+        .def_property_readonly("n_selected", [](const PyVoidFinder& v) { return v.get().n_selected(); })
+        .def_property_readonly("r_threshold", [](const PyVoidFinder& v) { return v.get().r_threshold(); })
+        .def_property_readonly("order", [](const PyVoidFinder& v) { return copy_numpy(v.get().order()); },
+                               "rank -> punto (copia)")
+        .def_property_readonly("rank", [](const PyVoidFinder& v) { return copy_numpy(v.get().rank()); },
+                               "punto -> rank o -1 (copia)")
+        .def("count_selected", [](const PyVoidFinder& v, Index start, Index stop) {
+            const auto& rank = v.get().rank();
+            start = std::clamp<Index>(start, 0, Index(rank.size()));
+            stop = std::clamp<Index>(stop, start, Index(rank.size()));
+            return Index(std::count_if(rank.begin() + start, rank.begin() + stop, [](std::int32_t r) { return r >= 0; }));
+        }, py::arg("start"), py::arg("stop"), "Puntos seleccionados en [start, stop)")
+        .def("build_adjacency", &PyVoidFinder::build_adjacency, py::arg("triangulation"), py::arg("threads") = 0,
+             "Fusiona los duplicados exactos con su punto canónico y construye la adyacencia inferior\n"
+             "inducida por los puntos seleccionados; devuelve el número de aristas")
+        .def("adjacency", &PyVoidFinder::adjacency, "(offsets int64, vecinos int32) en espacio de rank (copia)")
+        .def("release_adjacency", [](PyVoidFinder& v) { v.get().release_adjacency(); })
+        .def("grow", &PyVoidFinder::grow, py::arg("min_members") = 4, "Watershed de ASTRA + corte min_members")
+        .def_property_readonly("n_seeds", [](const PyVoidFinder& v) { return v.get().n_seeds(); })
+        .def_property_readonly("n_merged_duplicates", [](const PyVoidFinder& v) { return v.get().n_merged_duplicates(); })
+        .def_property_readonly("n_groups_premask", [](const PyVoidFinder& v) { return v.get().n_groups_premask(); })
+        .def_property_readonly("n_groups", [](const PyVoidFinder& v) { return v.get().n_groups(); })
+        .def("apply_selection_mask", &PyVoidFinder::apply_selection_mask, py::arg("mask"), py::arg("xyz"),
+             py::arg("is_data"), py::arg("ra") = py::none(), py::arg("dec") = py::none(),
+             py::arg("angular_sample_step") = 0.0, py::arg("min_members") = 4, py::arg("threads") = 0)
+        .def("flag_box_border", &PyVoidFinder::flag_box_border, py::arg("xyz"), py::arg("box_lo"), py::arg("box_hi"),
+             py::arg("buffer"), py::arg("threads") = 0)
+        .def("shapes", &PyVoidFinder::shapes, py::arg("xyz"), py::arg("is_data"), py::arg("scale") = 1.0,
+             py::arg("box_lo") = py::none(), py::arg("box_hi") = py::none(), py::arg("threads") = 0)
+        .def("membership", &PyVoidFinder::membership, py::arg("threads") = 0,
+             "(GROUP_ID_PREMASK int32, GROUP_ID int32, flags uint8) por punto")
+        .def_property_readonly("border", [](const PyVoidFinder& v) { return copy_numpy(v.get().border()); })
+        .def_property_readonly("seed_rank", [](const PyVoidFinder& v) { return copy_numpy(v.get().seed_rank()); })
+        .def_property_readonly("seed_size", [](const PyVoidFinder& v) { return copy_numpy(v.get().seed_size()); })
+        .def_property_readonly("premask_by_rank", [](const PyVoidFinder& v) { return copy_numpy(v.get().premask_by_rank()); })
+        .def_property_readonly("group_by_rank", [](const PyVoidFinder& v) { return copy_numpy(v.get().group_by_rank()); });
+
+    m.def("void_consensus", [](const CArray<double>& centers, const CArray<double>& radii,
+                               const CArray<std::int32_t>& origins, int n_runs, double vol_frac,
+                               std::optional<std::array<double, 3>> box_lo, std::optional<std::array<double, 3>> box_hi,
+                               Index batch, int threads) {
+        const py::ssize_t n = radii.size();
+        require_1d(radii, n, "radii");
+        require_1d(origins, n, "origins");
+        if (centers.ndim() != 2 || centers.shape(0) != n || centers.shape(1) != 3)
+            throw std::invalid_argument("centers must have shape (N, 3)");
+        ConsensusOptions opt;
+        opt.vol_frac = vol_frac;
+        opt.batch = batch;
+        if (const auto box = make_box(box_lo, box_hi)) {
+            opt.periodic = true;
+            opt.box = *box;
+        }
+        ConsensusResult r;
+        {
+            py::gil_scoped_release release;
+            r = void_consensus(centers.data(), radii.data(), origins.data(), n, n_runs, opt, threads);
+        }
+        py::dict out;
+        out["rows"] = to_numpy(std::move(r.rows));
+        out["support"] = to_numpy(std::move(r.support));
+        out["n_absorbed"] = to_numpy(std::move(r.n_absorbed));
+        out["n_groups"] = r.n_groups;
+        out["n_duplicates"] = r.n_duplicates;
+        return out;
+    }, py::arg("centers"), py::arg("radii"), py::arg("origins"), py::arg("n_runs"), py::arg("vol_frac") = 0.5,
+       py::arg("box_lo") = py::none(), py::arg("box_hi") = py::none(), py::arg("batch") = 32768,
+       py::arg("threads") = 0,
+       "Consenso de voids de varias realizaciones: filas representativas, soporte y absorbidos");
+
     m.def("counts_to_probabilities", [](const CArray<std::uint16_t>& counts, int n_iterations, int threads) {
         if (counts.ndim() != 2 || counts.shape(1) != kNumWebTypes) throw std::invalid_argument("counts must have shape (N, 4)");
         if (n_iterations <= 0) throw std::invalid_argument("n_iterations must be positive");

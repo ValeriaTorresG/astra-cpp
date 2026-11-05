@@ -31,7 +31,9 @@ add_library(astra_core STATIC
   cpp/src/cosmology.cpp
   cpp/src/random_pool.cpp
   cpp/src/delaunay.cpp
-  cpp/src/classify.cpp)
+  cpp/src/classify.cpp
+  cpp/src/voids.cpp
+  cpp/src/void_consensus.cpp)
 target_include_directories(astra_core PUBLIC cpp/include)
 target_include_directories(astra_core SYSTEM PUBLIC "${CGAL_INCLUDE_DIR}" "${GMP_PREFIX}/include")
 target_compile_definitions(astra_core PUBLIC CGAL_DISABLE_ROUNDING_MATH_CHECK)

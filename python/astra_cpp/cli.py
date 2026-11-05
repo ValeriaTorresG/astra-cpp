@@ -8,7 +8,8 @@ from .config import (DEFAULT_CUBIC_BOX, DEFAULT_CUTSKY_RANDOM_GLOB, DEFAULT_CUTS
                      CubicConfig, CutskyConfig, default_threads)
 
 
-def _common(p: argparse.ArgumentParser) -> None:
+def add_run_args(p: argparse.ArgumentParser) -> None:
+    """arguments shared by every per-iteration command (classification and voids)."""
     p.add_argument('--iteration', type=int, default=0, help='random iteration (determines the seed)')
     p.add_argument('--seed-offset', type=int, default=0, help='seed = seed-offset + iteration')
     p.add_argument('--threads', type=int, default=default_threads())
@@ -16,32 +17,14 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help='cgal insertion threads (0: min(threads, 64))')
     p.add_argument('--lock-grid-cells', type=int, default=0,
                    help='lock grid resolution per axis (0: automatic ∝ n^(1/3))')
-    p.add_argument('--r-lower', type=float, default=-0.25)
-    p.add_argument('--r-med', type=float, default=0.25)
-    p.add_argument('--r-upper', type=float, default=0.65)
     p.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT)
     p.add_argument('--no-save-points', dest='save_points', action='store_false',
-                   help='do not save positions (classification only)')
-    p.add_argument('--no-aggregate', dest='aggregate', action='store_false',
-                   help='do not recompute probabilities at the end')
+                   help='do not save positions')
     p.add_argument('--overwrite', action='store_true', help='rerun even if the iteration is complete')
     p.add_argument('--log-interval', type=float, default=30.0, help='seconds between resource logs')
 
 
-def _params(args, names) -> dict:
-    return {k: getattr(args, k) for k in names}
-
-
-COMMON = ('iteration', 'seed_offset', 'threads', 'triangulation_threads', 'lock_grid_cells', 'r_lower', 'r_med', 'r_upper',
-          'output_dir', 'save_points', 'aggregate', 'overwrite', 'log_interval')
-
-
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog='python -m astra_cpp', description=__doc__)
-    sub = parser.add_subparsers(dest='command', required=True)
-
-    p = sub.add_parser('cutsky', help='one iteration on a cut-sky mock + random pool')
-    _common(p)
+def add_cutsky_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('--real-file', type=Path, default=DEFAULT_CUTSKY_REAL)
     p.add_argument('--random-glob', default=DEFAULT_CUTSKY_RANDOM_GLOB)
     p.add_argument('--redshift', choices=('Z', 'Z_COSMO'), default='Z')
@@ -51,8 +34,8 @@ def main(argv=None) -> int:
     p.add_argument('--no-footprint', dest='footprint', action='store_const', const=None,
                    help='use the full catalogs, without a footprint cut')
 
-    p = sub.add_parser('cubic', help='one iteration on a cubic box + uniform randoms')
-    _common(p)
+
+def add_cubic_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('--box-file', type=Path, default=DEFAULT_CUBIC_BOX)
     p.add_argument('--box-size', type=float, default=2000.0)
     p.add_argument('--random-factor', type=float, default=1.0)
@@ -61,6 +44,39 @@ def main(argv=None) -> int:
     p.add_argument('--subbox', type=float, default=None, help='side length of a nonperiodic subbox (tests)')
     p.add_argument('--ghost-margin', type=float, default=0.0,
                    help='periodic copy layer width (0: 8 mean spacings)')
+
+
+def _common(p: argparse.ArgumentParser) -> None:
+    add_run_args(p)
+    p.add_argument('--r-lower', type=float, default=-0.25)
+    p.add_argument('--r-med', type=float, default=0.25)
+    p.add_argument('--r-upper', type=float, default=0.65)
+    p.add_argument('--no-aggregate', dest='aggregate', action='store_false',
+                   help='do not recompute probabilities at the end')
+
+
+def _params(args, names) -> dict:
+    return {k: getattr(args, k) for k in names}
+
+
+RUN = ('iteration', 'seed_offset', 'threads', 'triangulation_threads', 'lock_grid_cells', 'output_dir', 'save_points',
+       'overwrite', 'log_interval')
+CUTSKY = ('real_file', 'random_glob', 'redshift', 'max_real_rows', 'footprint')
+CUBIC = ('box_file', 'box_size', 'random_factor', 'periodic', 'ghost_margin', 'subbox')
+COMMON = RUN + ('r_lower', 'r_med', 'r_upper', 'aggregate')
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog='python -m astra_cpp', description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    p = sub.add_parser('cutsky', help='one iteration on a cut-sky mock + random pool')
+    _common(p)
+    add_cutsky_args(p)
+
+    p = sub.add_parser('cubic', help='one iteration on a cubic box + uniform randoms')
+    _common(p)
+    add_cubic_args(p)
 
     p = sub.add_parser('aggregate', help='probabilities from completed iterations')
     p.add_argument('run_dir', type=Path)
@@ -81,9 +97,9 @@ def main(argv=None) -> int:
 
     from .pipeline import run_cubic, run_cutsky
     if args.command == 'cutsky':
-        cfg = CutskyConfig(**_params(args, COMMON + ('real_file', 'random_glob', 'redshift', 'max_real_rows', 'footprint')))
+        cfg = CutskyConfig(**_params(args, COMMON + CUTSKY))
         run_cutsky(cfg)
     else:
-        cfg = CubicConfig(**_params(args, COMMON + ('box_file', 'box_size', 'random_factor', 'periodic', 'ghost_margin', 'subbox')))
+        cfg = CubicConfig(**_params(args, COMMON + CUBIC))
         run_cubic(cfg)
     return 0

@@ -338,30 +338,30 @@ struct Delaunay3::Impl {
         return true;
     }
 
-    // count v's data / random neighbors by traversing incident cells with a
-    // custom bfs (without internal tds marks, so it is safe in parallel).
-    // ghosts count as their original points. return false if v's star cannot
-    // be verified as exact (periodic mode).
-    bool count_neighbors(Vertex_handle v, const std::uint8_t* is_data, NeighborScratch& s, std::int32_t& nd,
-                         std::int32_t& nr) const {
+    // call visit(j) once for each distinct finite neighbor j (original index)
+    // of v, traversing incident cells with a custom bfs (without internal tds
+    // marks, so it is safe in parallel). ghosts count as their original points.
+    // with `verify` (periodic mode), return false if v's star cannot be
+    // verified as exact.
+    template <class Visit>
+    bool visit_star(Vertex_handle v, NeighborScratch& s, bool verify, Visit&& visit) const {
         bool verified = true;
-        nd = nr = 0;
         s.cells.clear();
         s.seen_cells.clear();
         s.seen_points.clear();
         s.cells.push_back(v->cell());
         s.seen_cells.insert(reinterpret_cast<std::uintptr_t>(&*v->cell()));
-        const Index self = v->info().id;
+        const Index self = orig(v->info().id);
         for (std::size_t h = 0; h < s.cells.size(); ++h) {
             const Cell_handle c = s.cells[h];
-            if (opt.periodic && verified) verified = !dt.is_infinite(c) && circumsphere_inside(c);
+            if (verify && verified) verified = !dt.is_infinite(c) && circumsphere_inside(c);
             const int iv = c->index(v);
             for (int k = 0; k < 4; ++k) {
                 if (k == iv) continue;
                 const Vertex_handle w = c->vertex(k);
                 if (!dt.is_infinite(w)) {
                     const Index j = orig(w->info().id);
-                    if (j != self && s.seen_points.insert(std::uintptr_t(j) + 1)) ++(is_data[j] ? nd : nr);
+                    if (j != self && s.seen_points.insert(std::uintptr_t(j) + 1)) visit(j);
                 }
                 // the cell opposite vertex k also contains v
                 const Cell_handle next = c->neighbor(k);
@@ -369,6 +369,14 @@ struct Delaunay3::Impl {
             }
         }
         return verified;
+    }
+
+    // count v's data / random neighbors. return false if v's star cannot be
+    // verified as exact (periodic mode).
+    bool count_neighbors(Vertex_handle v, const std::uint8_t* is_data, NeighborScratch& s, std::int32_t& nd,
+                         std::int32_t& nr) const {
+        nd = nr = 0;
+        return visit_star(v, s, opt.periodic, [&](Index j) { ++(is_data[j] ? nd : nr); });
     }
 };
 
@@ -386,6 +394,7 @@ std::size_t Delaunay3::number_of_finite_cells() const { return impl_->dt.number_
 std::size_t Delaunay3::number_of_finite_edges() const { return impl_->dt.number_of_finite_edges(); }
 bool Delaunay3::is_valid() const { return impl_->dt.is_valid(); }
 const std::vector<std::array<Index, 2>>& Delaunay3::duplicates() const { return impl_->duplicates; }
+Index Delaunay3::original_point(Index id) const { return impl_->orig(id); }
 
 NeighborCounts Delaunay3::neighbor_counts(const std::uint8_t* is_data, int threads) const {
     const DT& dt = impl_->dt;
@@ -418,6 +427,63 @@ NeighborCounts Delaunay3::neighbor_counts(const std::uint8_t* is_data, int threa
         const auto src = std::size_t(impl_->orig(d[1]));
         out.ndata[std::size_t(d[0])] = out.ndata[src];
         out.nrand[std::size_t(d[0])] = out.nrand[src];
+    }
+    return out;
+}
+
+LowerAdjacency Delaunay3::lower_adjacency(const std::int32_t* rank, Index m, int threads) const {
+    const DT& dt = impl_->dt;
+    if (dt.dimension() < 3) throw std::runtime_error("all points are coplanar");
+    const Index n = impl_->n;
+    if (m < 0 || m > Index(std::numeric_limits<std::int32_t>::max()))
+        throw std::invalid_argument("the number of selected points must fit in int32");
+
+    // vertices of selected original points (exact duplicates have no vertex
+    // of their own: their rows stay empty).
+    std::vector<Vertex_handle> verts;
+    for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v) {
+        const Index id = v->info().id;
+        if (id < n && rank[id] >= 0) verts.push_back(v);
+    }
+
+    LowerAdjacency out;
+    std::vector<std::int32_t> star_degree(std::size_t(m), 0);
+    const int nt = resolve_threads(threads);
+    // pass 1: number of lower selected neighbors of each selected vertex
+#pragma omp parallel num_threads(nt)
+    {
+        NeighborScratch scratch;
+        scratch.cells.reserve(128);
+#pragma omp for schedule(dynamic, 4096)
+        for (std::size_t k = 0; k < verts.size(); ++k) {
+            const std::int32_t self = rank[verts[k]->info().id];
+            std::int32_t count = 0;
+            impl_->visit_star(verts[k], scratch, false, [&](Index j) {
+                const std::int32_t rj = rank[j];
+                if (rj >= 0 && rj < self) ++count;
+            });
+            star_degree[std::size_t(self)] = count;
+        }
+    }
+    out.offsets.assign(std::size_t(m) + 1, 0);
+    for (Index k = 0; k < m; ++k)
+        out.offsets[std::size_t(k) + 1] = out.offsets[std::size_t(k)] + star_degree[std::size_t(k)];
+    out.neighbors.resize(std::size_t(out.offsets[std::size_t(m)]));
+
+    // pass 2: fill the rows
+#pragma omp parallel num_threads(nt)
+    {
+        NeighborScratch scratch;
+        scratch.cells.reserve(128);
+#pragma omp for schedule(dynamic, 4096)
+        for (std::size_t k = 0; k < verts.size(); ++k) {
+            const std::int32_t self = rank[verts[k]->info().id];
+            std::int64_t cursor = out.offsets[std::size_t(self)];
+            impl_->visit_star(verts[k], scratch, false, [&](Index j) {
+                const std::int32_t rj = rank[j];
+                if (rj >= 0 && rj < self) out.neighbors[std::size_t(cursor++)] = rj;
+            });
+        }
     }
     return out;
 }

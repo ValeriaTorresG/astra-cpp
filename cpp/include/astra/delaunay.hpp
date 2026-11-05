@@ -41,6 +41,15 @@ struct NeighborCounts {
     Index n_unverified = 0;   // periodic mode: points whose star could not be verified
 };
 
+// adjacency (csr) of the subgraph induced by a set of selected points, in rank
+// space: the selected points are numbered 0..m-1 (their rank) and row k lists
+// the ranks j < k of the selected delaunay neighbors of rank k. each induced
+// edge is therefore stored exactly once, in the row of its higher-ranked end.
+struct LowerAdjacency {
+    std::vector<std::int64_t> offsets;    // m + 1
+    std::vector<std::int32_t> neighbors;  // offsets[m] ranks
+};
+
 class Delaunay3 {
 public:
     // xyz: n contiguous (x, y, z) points as doubles. read only during
@@ -62,9 +71,17 @@ public:
     // points identical to an already inserted point: (point, canonical vertex).
     // inherit counts from the canonical point.
     const std::vector<std::array<Index, 2>>& duplicates() const;
+    // original point of a vertex id (ghost ids map to the point they copy).
+    Index original_point(Index id) const;
 
     // ndata and nrand per point: finite delaunay neighbors that are data / random.
     NeighborCounts neighbor_counts(const std::uint8_t* is_data, int threads) const;
+
+    // lower adjacency of the points with rank[i] >= 0 (ranks 0..m-1, one per
+    // selected point; -1 for the others). ghosts count as their original
+    // points. exact duplicates have no vertex, so their rows are empty: merge
+    // them with their canonical point first (VoidFinder::merge_duplicates).
+    LowerAdjacency lower_adjacency(const std::int32_t* rank, Index m, int threads) const;
 
     // edges (i, j) with i < j in original indices, unique, sorted, and flattened
     // (for validation on small samples). periodic mode includes edges crossing
